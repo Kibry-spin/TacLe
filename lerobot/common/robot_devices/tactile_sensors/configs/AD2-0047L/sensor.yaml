@@ -1,0 +1,170 @@
+version: 3.2.1
+
+SN: AD2-0047L
+
+key: eca092f9746ab8fa05ac0c91a554d7dc
+
+pipeline:
+- name: InputSource
+  threads: 1
+  config:
+    inputType: 0     # 0:usb   1:csi   2:video
+    inputSrc: 0
+    maxFPS: 999
+    width: 1920
+    height: 1080
+    framesSkip: 30
+    framesStep: 1
+    flipX: true
+    flipY: false
+    autoExposure: false
+    manualExposure: -6
+    autoWhiteBalance: true
+    manualWhiteBalance: 4800
+- name: DMP3_by_Zhang
+  threads: 1
+  config:
+    numberOfMarkers: 400
+    fastMode: false
+    UniformBrightness: 0.8
+    BG_Threshold: 80
+    BG_XHatSize: 40
+    BG_color: 0      # 0:black   1:white
+    blurSize: 5
+    minContourArea: 20
+    movementRange: 25
+    discardBadFrame: true
+    nx: 20
+    ny: 20
+    drawDisplacements: true
+    quickMatch:
+      width: 1920
+      height: 1080
+      cellDepth: 15
+      divX: 112
+      divY: 63
+    dynamicCompensation:
+      enabled: false
+      threshold: 35
+      searchDiv: 3
+      blocks: 2
+- name: Reconstruction3D
+  threads: 1
+  config:
+    useDC: false
+    numberOfMarkers: 400
+    calibration:
+      debug: false
+      nx: 8
+      ny: 11
+      csize: 1.5
+      cz: 6
+  filters:
+  - name: Mean_t
+    field: 3D_Positions
+    windowSize: 3
+- name: Displacements
+  threads: 1
+  config:
+    fields:
+    - input: 3D_Positions
+      output: 3D_Displacements
+      calibrateWinSize: 30
+      zeroPointCorrection:
+        trigger: NonContactState
+        delay: 30
+        weight: 0.05
+- name: ContactDetector
+  threads: 1
+  config:
+    detectMatrix: HD_Matrix.csv
+    accordingTo: 3D_Displacements
+    accordingTo_dim: 3
+    threshold: 0.15
+    trigger: NonContactState
+- name: Force_by_Zhang
+  threads: 1
+  config:
+    dD: 0.0
+    dE: -0.15999999999999998
+    dP: 0.8799999999999999
+    dX: 0.0
+    dY: 0.0
+    dQ: 1.05
+    calibrateX: 1.0010137529156793
+    calibrateY: 1.0004409747035685
+    calibrateZ: 1.000357445225365
+    matrixKPath: default
+  filters:
+  - name: Mean_t
+    field: 3D_ResultantForce
+    windowSize: 3
+  - name: Mean_t
+    field: 3D_ResultantMoment
+    windowSize: 3
+  - name: Mean_s
+    field: 3D_Forces
+  - name: ForceCorrection
+    forceField: 3D_Forces
+    positionField: 3D_Positions
+    alpha: 0.005
+    threshold: -0.01
+    cx: 0
+    cy: 0
+    cz: -15
+- name: CalibrationManager
+  threads: 1
+  config:
+    startUpFrame: 100
+- name: NetworkTransport_SDK
+  threads: 1
+  config:
+    enabled: true
+    remoteIP: 127.0.0.1
+    remotePort: 9988
+    sendData:
+    - fieldName: 3D_Displacements
+      type: mat
+    - fieldName: 3D_Positions
+      type: mat
+    - fieldName: 3D_Forces
+      type: mat
+    - fieldName: 3D_ResultantForce
+      type: mat
+    - fieldName: 3D_ResultantMoment
+      type: mat
+    - fieldName: InitializeProgress
+      type: f64
+- name: NetworkTransport
+  threads: 1
+  config:
+    enabled: true
+    remoteIP: 127.0.0.1
+    remotePort: 9987
+    sendData:
+    - fieldName: 3D_Displacements
+      type: mat
+    - fieldName: 3D_Positions
+      type: mat
+    - fieldName: 3D_Forces
+      type: mat
+    - fieldName: 3D_ResultantForce
+      type: mat
+    - fieldName: 3D_ResultantMoment
+      type: mat
+    - fieldName: InitializeProgress
+      type: f64
+- name: CustomCall
+  threads: 1
+  config:
+    nothing: nothing
+- name: ImageDisplayer
+  threads: 1
+  config:
+    displayFields:
+    - fieldName: DMP_Display
+      fixedSize: 0
+    - fieldName: xhatImg
+      fixedSize: 0
+    - fieldName: binaryImg
+      fixedSize: 0
