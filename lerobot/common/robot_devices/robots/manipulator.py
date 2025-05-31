@@ -27,8 +27,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from lerobot.common.robot_devices.cameras.utils import make_cameras_from_configs
+from lerobot.common.robot_devices.cameras.configs import CameraConfig
+from lerobot.common.robot_devices.cameras.utils import Camera, make_cameras_from_configs
+from lerobot.common.robot_devices.motors.configs import MotorsBusConfig
 from lerobot.common.robot_devices.motors.utils import MotorsBus, make_motors_buses_from_configs
+from lerobot.common.robot_devices.tactile_sensors.configs import TactileSensorConfig
+from lerobot.common.robot_devices.tactile_sensors.utils import TactileSensor, make_tactile_sensors_from_configs
 from lerobot.common.robot_devices.robots.configs import ManipulatorRobotConfig
 from lerobot.common.robot_devices.robots.utils import get_arm_id
 from lerobot.common.robot_devices.utils import RobotDeviceAlreadyConnectedError, RobotDeviceNotConnectedError
@@ -158,29 +162,96 @@ class ManipulatorRobot:
         self,
         config: ManipulatorRobotConfig,
     ):
+        self.robot_type = config.type
         self.config = config
-        self.robot_type = self.config.type
-        self.calibration_dir = Path(self.config.calibration_dir)
-        self.leader_arms = make_motors_buses_from_configs(self.config.leader_arms)
-        self.follower_arms = make_motors_buses_from_configs(self.config.follower_arms)
-        self.cameras = make_cameras_from_configs(self.config.cameras)
+        self.calibration_dir = Path(config.calibration_dir)
+
+        self.follower_arms = make_motors_buses_from_configs(config.follower_arms)
+        self.leader_arms = make_motors_buses_from_configs(config.leader_arms)
+        self.cameras = make_cameras_from_configs(config.cameras)
+        self.tactile_sensors = self._make_tactile_sensors_from_configs(config.tactile_sensors)
+
         self.is_connected = False
         self.logs = {}
 
-    def get_motor_names(self, arm: dict[str, MotorsBus]) -> list:
-        return [f"{arm}_{motor}" for arm, bus in arm.items() for motor in bus.motors]
+    def get_motor_names(self, arms: dict[str, MotorsBus]) -> list:
+        motor_names = []
+        for arm_name, arm in arms.items():
+            motor_names.extend(list(arm.motors.keys()))
+        return motor_names
+
+    def _make_tactile_sensors_from_configs(self, configs: dict[str, TactileSensorConfig]) -> dict[str, TactileSensor]:
+        """Create tactile sensor instances from configurations."""
+        return make_tactile_sensors_from_configs(configs)
 
     @property
     def camera_features(self) -> dict:
-        cam_ft = {}
-        for cam_key, cam in self.cameras.items():
-            key = f"observation.images.{cam_key}"
-            cam_ft[key] = {
-                "shape": (cam.height, cam.width, cam.channels),
+        features = {}
+        for name, camera in self.cameras.items():
+            # TODO(rcadene): add more info (e.g. fps, width, height)
+            features[f"observation.images.{name}"] = {
+                "shape": (camera.height, camera.width, camera.channels),
                 "names": ["height", "width", "channels"],
-                "info": None,
+                "dtype": "video",
             }
-        return cam_ft
+        return features
+
+    @property
+    def tactile_features(self) -> dict:
+        """Return the features associated with tactile sensors."""
+        tactile_ft = {}
+        for name in self.tactile_sensors:
+            # 基本元数据
+            tactile_ft[f"observation.tactile.{name}.sensor_sn"] = {
+                "dtype": "string",
+                "shape": (1,),
+                "names": None,
+            }
+            tactile_ft[f"observation.tactile.{name}.frame_index"] = {
+                "dtype": "int64", 
+                "shape": (1,),
+                "names": None,
+            }
+            tactile_ft[f"observation.tactile.{name}.send_timestamp"] = {
+                "dtype": "float64",
+                "shape": (1,),
+                "names": None,
+            }
+            tactile_ft[f"observation.tactile.{name}.recv_timestamp"] = {
+                "dtype": "float64", 
+                "shape": (1,),
+                "names": None,
+            }
+            
+            # 三维数据阵列 (400个标志点，每个3维坐标)
+            tactile_ft[f"observation.tactile.{name}.positions_3d"] = {
+                "dtype": "float64",
+                "shape": (400, 3),
+                "names": ["marker_id", "coordinate"],
+            }
+            tactile_ft[f"observation.tactile.{name}.displacements_3d"] = {
+                "dtype": "float64",
+                "shape": (400, 3), 
+                "names": ["marker_id", "coordinate"],
+            }
+            tactile_ft[f"observation.tactile.{name}.forces_3d"] = {
+                "dtype": "float64",
+                "shape": (400, 3),
+                "names": ["marker_id", "coordinate"],
+            }
+            
+            # 合成力和力矩
+            tactile_ft[f"observation.tactile.{name}.resultant_force"] = {
+                "dtype": "float64",
+                "shape": (3,),
+                "names": ["x", "y", "z"],
+            }
+            tactile_ft[f"observation.tactile.{name}.resultant_moment"] = {
+                "dtype": "float64",
+                "shape": (3,),
+                "names": ["x", "y", "z"],
+            }
+        return tactile_ft
 
     @property
     def motor_features(self) -> dict:
@@ -201,7 +272,7 @@ class ManipulatorRobot:
 
     @property
     def features(self):
-        return {**self.motor_features, **self.camera_features}
+        return {**self.motor_features, **self.camera_features, **self.tactile_features}
 
     @property
     def has_camera(self):
@@ -233,61 +304,34 @@ class ManipulatorRobot:
                 "ManipulatorRobot doesn't have any device to connect. See example of usage in docstring of the class."
             )
 
-        # Connect the arms
-        for name in self.follower_arms:
-            print(f"Connecting {name} follower arm.")
-            self.follower_arms[name].connect()
+        # Connect the leader arms
         for name in self.leader_arms:
-            print(f"Connecting {name} leader arm.")
+            print(f"Connecting {name} leader arm...")
             self.leader_arms[name].connect()
 
-        if self.robot_type in ["koch", "koch_bimanual", "aloha"]:
-            from lerobot.common.robot_devices.motors.dynamixel import TorqueMode
-        elif self.robot_type in ["so100", "so101", "moss", "lekiwi"]:
-            from lerobot.common.robot_devices.motors.feetech import TorqueMode
-
-        # We assume that at connection time, arms are in a rest position, and torque can
-        # be safely disabled to run calibration and/or set robot preset configurations.
+        # Connect the follower arms
         for name in self.follower_arms:
-            self.follower_arms[name].write("Torque_Enable", TorqueMode.DISABLED.value)
-        for name in self.leader_arms:
-            self.leader_arms[name].write("Torque_Enable", TorqueMode.DISABLED.value)
-
-        self.activate_calibration()
-
-        # Set robot preset (e.g. torque in leader gripper for Koch v1.1)
-        if self.robot_type in ["koch", "koch_bimanual"]:
-            self.set_koch_robot_preset()
-        elif self.robot_type == "aloha":
-            self.set_aloha_robot_preset()
-        elif self.robot_type in ["so100", "so101", "moss", "lekiwi"]:
-            self.set_so100_robot_preset()
-
-        # Enable torque on all motors of the follower arms
-        for name in self.follower_arms:
-            print(f"Activating torque on {name} follower arm.")
-            self.follower_arms[name].write("Torque_Enable", 1)
-
-        if self.config.gripper_open_degree is not None:
-            if self.robot_type not in ["koch", "koch_bimanual"]:
-                raise NotImplementedError(
-                    f"{self.robot_type} does not support position AND current control in the handle, which is require to set the gripper open."
-                )
-            # Set the leader arm in torque mode with the gripper motor set to an angle. This makes it possible
-            # to squeeze the gripper and have it spring back to an open position on its own.
-            for name in self.leader_arms:
-                self.leader_arms[name].write("Torque_Enable", 1, "gripper")
-                self.leader_arms[name].write("Goal_Position", self.config.gripper_open_degree, "gripper")
-
-        # Check both arms can be read
-        for name in self.follower_arms:
-            self.follower_arms[name].read("Present_Position")
-        for name in self.leader_arms:
-            self.leader_arms[name].read("Present_Position")
+            print(f"Connecting {name} follower arm...")
+            self.follower_arms[name].connect()
 
         # Connect the cameras
         for name in self.cameras:
+            print(f"Connecting {name} camera...")
             self.cameras[name].connect()
+
+        # Connect the tactile sensors
+        for name in self.tactile_sensors:
+            print(f"Connecting {name} tactile sensor...")
+            self.tactile_sensors[name].connect()
+
+        self.activate_calibration()
+
+        if self.robot_type == "aloha":
+            self.set_aloha_robot_preset()
+        elif self.robot_type in ["koch", "koch_bimanual"]:
+            self.set_koch_robot_preset()
+        elif self.robot_type == "so100":
+            self.set_so100_robot_preset()
 
         self.is_connected = True
 
@@ -514,12 +558,86 @@ class ManipulatorRobot:
             self.logs[f"read_camera_{name}_dt_s"] = self.cameras[name].logs["delta_timestamp_s"]
             self.logs[f"async_read_camera_{name}_dt_s"] = time.perf_counter() - before_camread_t
 
+        # Read tactile sensor data
+        tactile_data = {}
+        for name in self.tactile_sensors:
+            before_tactile_read_t = time.perf_counter()
+            data = self.tactile_sensors[name].read()
+            
+            if data:
+                # 基本元数据
+                tactile_data[f"{name}_sensor_sn"] = data.get('SN', '')  # 直接使用字符串
+                tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('index', 0)], dtype=torch.int64)
+                tactile_data[f"{name}_send_timestamp"] = torch.tensor([data.get('sendTimestamp', 0.0)], dtype=torch.float64)
+                tactile_data[f"{name}_recv_timestamp"] = torch.tensor([data.get('recvTimestamp', 0.0)], dtype=torch.float64)
+                
+                # 三维数据阵列
+                if '3D_Positions' in data and data['3D_Positions'] is not None:
+                    positions = data['3D_Positions']
+                    tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Displacements' in data and data['3D_Displacements'] is not None:
+                    displacements = data['3D_Displacements'] 
+                    tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Forces' in data and data['3D_Forces'] is not None:
+                    forces_3d = data['3D_Forces']
+                    tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                # 合成力和力矩
+                if 'resultant_force' in data and data['resultant_force'] is not None:
+                    force = data['resultant_force']
+                    if force.size >= 3:
+                        tactile_data[f"{name}_resultant_force"] = torch.tensor([force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64)
+                    else:
+                        tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                
+                if 'resultant_moment' in data and data['resultant_moment'] is not None:
+                    moment = data['resultant_moment']
+                    if moment.size >= 3:
+                        tactile_data[f"{name}_resultant_moment"] = torch.tensor([moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64)
+                    else:
+                        tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+            else:
+                # 如果没有数据，填充默认值
+                tactile_data[f"{name}_sensor_sn"] = ''
+                tactile_data[f"{name}_frame_index"] = torch.tensor([0], dtype=torch.int64)
+                tactile_data[f"{name}_send_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
+                tactile_data[f"{name}_recv_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
+                tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+            
+            self.logs[f"read_tactile_{name}_dt_s"] = time.perf_counter() - before_tactile_read_t
+
         # Populate output dictionaries
         obs_dict, action_dict = {}, {}
         obs_dict["observation.state"] = state
         action_dict["action"] = action
         for name in self.cameras:
             obs_dict[f"observation.images.{name}"] = images[name]
+        for name in self.tactile_sensors:
+            obs_dict[f"observation.tactile.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
+            obs_dict[f"observation.tactile.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
+            obs_dict[f"observation.tactile.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
+            obs_dict[f"observation.tactile.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
+            obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+            obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+            obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+            obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+            obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
 
         return obs_dict, action_dict
 
@@ -554,11 +672,85 @@ class ManipulatorRobot:
             self.logs[f"read_camera_{name}_dt_s"] = self.cameras[name].logs["delta_timestamp_s"]
             self.logs[f"async_read_camera_{name}_dt_s"] = time.perf_counter() - before_camread_t
 
+        # Read tactile sensor data
+        tactile_data = {}
+        for name in self.tactile_sensors:
+            before_tactile_read_t = time.perf_counter()
+            data = self.tactile_sensors[name].read()
+            
+            if data:
+                # 基本元数据
+                tactile_data[f"{name}_sensor_sn"] = data.get('SN', '')  # 直接使用字符串
+                tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('index', 0)], dtype=torch.int64)
+                tactile_data[f"{name}_send_timestamp"] = torch.tensor([data.get('sendTimestamp', 0.0)], dtype=torch.float64)
+                tactile_data[f"{name}_recv_timestamp"] = torch.tensor([data.get('recvTimestamp', 0.0)], dtype=torch.float64)
+                
+                # 三维数据阵列
+                if '3D_Positions' in data and data['3D_Positions'] is not None:
+                    positions = data['3D_Positions']
+                    tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Displacements' in data and data['3D_Displacements'] is not None:
+                    displacements = data['3D_Displacements'] 
+                    tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Forces' in data and data['3D_Forces'] is not None:
+                    forces_3d = data['3D_Forces']
+                    tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                # 合成力和力矩
+                if 'resultant_force' in data and data['resultant_force'] is not None:
+                    force = data['resultant_force']
+                    if force.size >= 3:
+                        tactile_data[f"{name}_resultant_force"] = torch.tensor([force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64)
+                    else:
+                        tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                
+                if 'resultant_moment' in data and data['resultant_moment'] is not None:
+                    moment = data['resultant_moment']
+                    if moment.size >= 3:
+                        tactile_data[f"{name}_resultant_moment"] = torch.tensor([moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64)
+                    else:
+                        tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+            else:
+                # 如果没有数据，填充默认值
+                tactile_data[f"{name}_sensor_sn"] = ''
+                tactile_data[f"{name}_frame_index"] = torch.tensor([0], dtype=torch.int64)
+                tactile_data[f"{name}_send_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
+                tactile_data[f"{name}_recv_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
+                tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+            
+            self.logs[f"read_tactile_{name}_dt_s"] = time.perf_counter() - before_tactile_read_t
+
         # Populate output dictionaries and format to pytorch
         obs_dict = {}
         obs_dict["observation.state"] = state
         for name in self.cameras:
             obs_dict[f"observation.images.{name}"] = images[name]
+        for name in self.tactile_sensors:
+            obs_dict[f"observation.tactile.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
+            obs_dict[f"observation.tactile.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
+            obs_dict[f"observation.tactile.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
+            obs_dict[f"observation.tactile.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
+            obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+            obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+            obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+            obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+            obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
         return obs_dict
 
     def send_action(self, action: torch.Tensor) -> torch.Tensor:
@@ -619,6 +811,9 @@ class ManipulatorRobot:
 
         for name in self.cameras:
             self.cameras[name].disconnect()
+
+        for name in self.tactile_sensors:
+            self.tactile_sensors[name].disconnect()
 
         self.is_connected = False
 
