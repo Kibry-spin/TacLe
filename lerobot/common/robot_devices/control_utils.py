@@ -299,6 +299,15 @@ def reset_environment(robot, events, reset_time_s, fps):
     if has_method(robot, "teleop_safety_stop"):
         robot.teleop_safety_stop()
 
+    # 重新校准触觉传感器
+    if hasattr(robot, 'tactile_sensors') and robot.tactile_sensors:
+        print("正在重新校准触觉传感器...")
+        for name, sensor in robot.tactile_sensors.items():
+            if sensor.is_connected():
+                print(f"校准传感器 {name}...")
+                sensor.calibrate()
+        print("触觉传感器校准完成")
+
     control_loop(
         robot=robot,
         control_time_s=reset_time_s,

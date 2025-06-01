@@ -79,15 +79,16 @@ python lerobot/scripts/control_robot.py replay \
 - Record a full dataset in order to train a policy, with 2 seconds of warmup,
 30 seconds of recording for each episode, and 10 seconds to reset the environment in between episodes:
 ```bash
-python lerobot/scripts/control_robot.py record \
+python lerobot/scripts/control_robot.py \
     --robot.type=so100 \
     --control.type=record \
     --control.fps 30 \
-    --control.repo_id=$USER/koch_pick_place_lego \
-    --control.num_episodes=50 \
+    --control.repo_id=$USER/TEST-Tactile \
+    --control.num_episodes=5 \
     --control.warmup_time_s=2 \
     --control.episode_time_s=30 \
-    --control.reset_time_s=10
+    --control.reset_time_s=10 \
+    --control.single_task="Just move the robot"
 ```
 
 - For remote controlled robots like LeKiwi, run this script on the robot edge device (e.g. RaspBerryPi):
