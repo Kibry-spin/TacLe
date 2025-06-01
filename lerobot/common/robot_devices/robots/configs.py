@@ -28,6 +28,10 @@ from lerobot.common.robot_devices.motors.configs import (
     FeetechMotorsBusConfig,
     MotorsBusConfig,
 )
+from lerobot.common.robot_devices.tactile_sensors.configs import (
+    TactileSensorConfig,
+    Tac3DConfig,
+)
 
 
 @dataclass
@@ -43,6 +47,7 @@ class ManipulatorRobotConfig(RobotConfig):
     leader_arms: dict[str, MotorsBusConfig] = field(default_factory=lambda: {})
     follower_arms: dict[str, MotorsBusConfig] = field(default_factory=lambda: {})
     cameras: dict[str, CameraConfig] = field(default_factory=lambda: {})
+    tactile_sensors: dict[str, TactileSensorConfig] = field(default_factory=lambda: {})
 
     # Optionally limit the magnitude of the relative positional target vector for safety purposes.
     # Set this to a positive scalar to have the same value for all motors, or a list that is the same length
@@ -68,6 +73,9 @@ class ManipulatorRobotConfig(RobotConfig):
             for cam in self.cameras.values():
                 if not cam.mock:
                     cam.mock = True
+            for sensor in self.tactile_sensors.values():
+                if not sensor.mock:
+                    sensor.mock = True
 
         if self.max_relative_target is not None and isinstance(self.max_relative_target, Sequence):
             for name in self.follower_arms:
@@ -201,6 +209,21 @@ class AlohaRobotConfig(ManipulatorRobotConfig):
                 fps=30,
                 width=640,
                 height=480,
+            ),
+        }
+    )
+
+    # Tactile sensors configuration
+    # Example: Tac3D sensors on gripper tips
+    tactile_sensors: dict[str, TactileSensorConfig] = field(
+        default_factory=lambda: {
+            "left_gripper": Tac3DConfig(
+                port=9988,
+                auto_calibrate=True,
+            ),
+            "right_gripper": Tac3DConfig(
+                port=9989,
+                auto_calibrate=True,
             ),
         }
     )
@@ -506,7 +529,7 @@ class So100RobotConfig(ManipulatorRobotConfig):
     leader_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
             "main": FeetechMotorsBusConfig(
-                port="/dev/tty.usbmodem58760431091",
+                port="/dev/ttyACM0",
                 motors={
                     # name: (index, model)
                     "shoulder_pan": [1, "sts3215"],
@@ -523,7 +546,7 @@ class So100RobotConfig(ManipulatorRobotConfig):
     follower_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
             "main": FeetechMotorsBusConfig(
-                port="/dev/tty.usbmodem585A0076891",
+                port="/dev/ttyACM1",
                 motors={
                     # name: (index, model)
                     "shoulder_pan": [1, "sts3215"],
@@ -540,16 +563,21 @@ class So100RobotConfig(ManipulatorRobotConfig):
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {
             "laptop": OpenCVCameraConfig(
-                camera_index=0,
+                camera_index=2,
                 fps=30,
                 width=640,
                 height=480,
-            ),
-            "phone": OpenCVCameraConfig(
-                camera_index=1,
-                fps=30,
-                width=640,
-                height=480,
+            )
+        }
+    )
+
+    # Tactile sensors configuration
+    # Tac3D sensor on gripper tip
+    tactile_sensors: dict[str, TactileSensorConfig] = field(
+        default_factory=lambda: {
+            "main_gripper": Tac3DConfig(
+                port=9988,
+                auto_calibrate=True,
             ),
         }
     )

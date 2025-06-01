@@ -54,15 +54,15 @@ python lerobot/scripts/control_robot.py \
     --control.type=record \
     --control.fps=30 \
     --control.single_task="Grasp a lego block and put it in the bin." \
-    --control.repo_id=$USER/koch_test \
+    --control.repo_id=$USER/test_dataset \
     --control.num_episodes=1 \
-    --control.push_to_hub=True
+    --control.push_to_hub=true
 ```
 
 - Visualize dataset:
 ```bash
 python lerobot/scripts/visualize_dataset.py \
-    --repo-id $USER/koch_test \
+    --repo-id $USER/test_dataset1 \
     --episode-index 0
 ```
 
