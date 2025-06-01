@@ -174,6 +174,26 @@ def visualize_dataset(
             if "next.success" in batch:
                 rr.log("next.success", rr.Scalar(batch["next.success"][i].item()))
 
+            # display tactile sensor data
+            for key in batch.keys():
+                if key.startswith("observation.tactile."):
+                    # 提取传感器名称 (e.g., "main_gripper")
+                    parts = key.split(".")
+                    if len(parts) >= 4:
+                        sensor_name = parts[2]  # main_gripper
+                        data_type = parts[3]    # positions_3d, forces_3d, etc.
+                        
+                        if data_type == "resultant_force":
+                            # 显示合成力的各个分量
+                            force = batch[key][i].numpy()  # (3,)
+                            for dim_idx, val in enumerate(force):
+                                rr.log(f"tactile/{sensor_name}/resultant_force/{['x', 'y', 'z'][dim_idx]}", 
+                                      rr.Scalar(val.item()))
+                            # 显示合成力大小
+                            force_magnitude = np.linalg.norm(force)
+                            rr.log(f"tactile/{sensor_name}/resultant_force/magnitude", 
+                                  rr.Scalar(force_magnitude.item()))
+
     if mode == "local" and save:
         # save .rrd locally
         output_dir = Path(output_dir)
