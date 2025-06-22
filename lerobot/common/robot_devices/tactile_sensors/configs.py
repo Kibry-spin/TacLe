@@ -44,4 +44,29 @@ class Tac3DConfig(TactileSensorConfig):
         mock: Whether to use mock sensor for testing (default: False)
     """
     port: int = 9988
-    auto_calibrate: bool = True 
+    auto_calibrate: bool = True
+
+
+@TactileSensorConfig.register_subclass("gelsight")
+@dataclass
+class GelSightConfig(TactileSensorConfig):
+    """
+    Configuration for GelSight tactile sensor.
+    
+    Args:
+        device_name: Name of the camera device (default: "GelSight Mini")
+        imgh: Desired image height (default: 240)
+        imgw: Desired image width (default: 320)
+        raw_imgh: Raw image height (default: 2464)
+        raw_imgw: Raw image width (default: 3280)
+        framerate: Camera framerate (default: 25)
+        config_path: Path to sensor config file (optional)
+        mock: Whether to use mock sensor for testing (default: False)
+    """
+    device_name: str = "GelSight Mini"
+    imgh: int = 240
+    imgw: int = 320
+    raw_imgh: int = 2464
+    raw_imgw: int = 3280
+    framerate: int = 25
+    config_path: str = "" 

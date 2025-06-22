@@ -25,12 +25,24 @@ Note: This script aims to visualize the data used to train the neural networks.
 lossy compression artifacts since these images have been decoded from compressed mp4 videos to
 save disk space. The compression factor applied has been tuned to not affect success rate.
 
+Tactile Sensor Support:
+- Tac3D sensors: Displays resultant forces, moments, 3D positions, and force distributions
+- GelSight sensors: Displays tactile images with RGB channels and intensity statistics
+- Common metadata: sensor serial numbers, timestamps, frame indices
+
 Examples:
 
 - Visualize data stored on a local machine:
 ```
 local$ python lerobot/scripts/visualize_dataset.py \
     --repo-id lerobot/pusht \
+    --episode-index 0
+```
+
+- Visualize data with tactile sensors (including GelSight):
+```
+local$ python lerobot/scripts/visualize_dataset.py \
+    --repo-id your_dataset_with_tactile \
     --episode-index 0
 ```
 
@@ -177,14 +189,14 @@ def visualize_dataset(
             # display tactile sensor data
             for key in batch.keys():
                 if key.startswith("observation.tactile."):
-                    # 提取传感器名称 (e.g., "main_gripper")
+                    # 提取传感器名称 (e.g., "main_gripper", "left_gripper")
                     parts = key.split(".")
                     if len(parts) >= 4:
-                        sensor_name = parts[2]  # main_gripper
-                        data_type = parts[3]    # positions_3d, forces_3d, etc.
+                        sensor_name = parts[2]  # main_gripper, left_gripper, etc.
+                        data_type = parts[3]    # positions_3d, forces_3d, tactile_image, etc.
                         
                         if data_type == "resultant_force":
-                            # 显示合成力的各个分量
+                            # 显示Tac3D合成力的各个分量
                             force = batch[key][i].numpy()  # (3,)
                             for dim_idx, val in enumerate(force):
                                 rr.log(f"tactile/{sensor_name}/resultant_force/{['x', 'y', 'z'][dim_idx]}", 
@@ -193,6 +205,107 @@ def visualize_dataset(
                             force_magnitude = np.linalg.norm(force)
                             rr.log(f"tactile/{sensor_name}/resultant_force/magnitude", 
                                   rr.Scalar(force_magnitude.item()))
+                                  
+                        elif data_type == "resultant_moment":
+                            # 显示Tac3D合成力矩的各个分量
+                            moment = batch[key][i].numpy()  # (3,)
+                            for dim_idx, val in enumerate(moment):
+                                rr.log(f"tactile/{sensor_name}/resultant_moment/{['x', 'y', 'z'][dim_idx]}", 
+                                      rr.Scalar(val.item()))
+                            # 显示合成力矩大小
+                            moment_magnitude = np.linalg.norm(moment)
+                            rr.log(f"tactile/{sensor_name}/resultant_moment/magnitude", 
+                                  rr.Scalar(moment_magnitude.item()))
+                                  
+                        elif data_type == "tactile_image":
+                            # 显示GelSight触觉图像
+                            tactile_image = batch[key][i]  # (H, W, 3) 或 (3, H, W)
+                            
+                            # 检查图像数据格式并转换为正确格式
+                            if isinstance(tactile_image, torch.Tensor):
+                                if tactile_image.ndim == 3:
+                                    if tactile_image.shape[0] == 3:  # (3, H, W) - CHW格式
+                                        # 转换为HWC格式并转为numpy
+                                        if tactile_image.dtype == torch.float32:
+                                            # 浮点数图像，需要转换为uint8
+                                            tactile_image_np = to_hwc_uint8_numpy(tactile_image)
+                                        else:
+                                            # 已经是uint8，只需要转换维度顺序
+                                            tactile_image_np = tactile_image.permute(1, 2, 0).numpy()
+                                    else:  # (H, W, 3) - HWC格式
+                                        if tactile_image.dtype == torch.float32:
+                                            # 浮点数转uint8
+                                            tactile_image_np = (tactile_image * 255).type(torch.uint8).numpy()
+                                        else:
+                                            # 已经是uint8
+                                            tactile_image_np = tactile_image.numpy()
+                                else:
+                                    print(f"Warning: Unexpected tactile image dimensions: {tactile_image.shape}")
+                                    continue
+                            else:
+                                # 已经是numpy数组
+                                tactile_image_np = tactile_image
+                                
+                            # 确保数据类型正确
+                            if tactile_image_np.dtype != np.uint8:
+                                if tactile_image_np.max() <= 1.0:
+                                    # 归一化的浮点数图像
+                                    tactile_image_np = (tactile_image_np * 255).astype(np.uint8)
+                                else:
+                                    # 其他情况，直接转换
+                                    tactile_image_np = tactile_image_np.astype(np.uint8)
+                            
+                            # 记录触觉图像
+                            rr.log(f"tactile/{sensor_name}/tactile_image", rr.Image(tactile_image_np))
+                            
+                            # 可选：计算和显示图像统计信息
+                            mean_intensity = np.mean(tactile_image_np)
+                            rr.log(f"tactile/{sensor_name}/image_stats/mean_intensity", rr.Scalar(mean_intensity))
+                            
+                            # 可选：显示图像的RGB通道分别的平均值
+                            if tactile_image_np.shape[2] == 3:
+                                r_mean = np.mean(tactile_image_np[:, :, 0])
+                                g_mean = np.mean(tactile_image_np[:, :, 1])  
+                                b_mean = np.mean(tactile_image_np[:, :, 2])
+                                rr.log(f"tactile/{sensor_name}/image_stats/r_channel", rr.Scalar(r_mean))
+                                rr.log(f"tactile/{sensor_name}/image_stats/g_channel", rr.Scalar(g_mean))
+                                rr.log(f"tactile/{sensor_name}/image_stats/b_channel", rr.Scalar(b_mean))
+                                
+                        elif data_type == "positions_3d":
+                            # 显示Tac3D 3D位置数据（如果有的话）
+                            positions = batch[key][i].numpy()  # (N, 3) 
+                            if positions.size > 0:
+                                # 可以显示位置点的统计信息或可视化
+                                mean_position = np.mean(positions, axis=0)
+                                for dim_idx, val in enumerate(mean_position):
+                                    rr.log(f"tactile/{sensor_name}/positions_3d/mean_{['x', 'y', 'z'][dim_idx]}", 
+                                          rr.Scalar(val.item()))
+                                          
+                        elif data_type == "forces_3d":
+                            # 显示Tac3D 3D力数据（如果有的话）
+                            forces = batch[key][i].numpy()  # (N, 3)
+                            if forces.size > 0:
+                                # 显示力的统计信息
+                                mean_force = np.mean(forces, axis=0)
+                                for dim_idx, val in enumerate(mean_force):
+                                    rr.log(f"tactile/{sensor_name}/forces_3d/mean_{['x', 'y', 'z'][dim_idx]}", 
+                                          rr.Scalar(val.item()))
+                                # 显示力的总体大小
+                                total_force_magnitude = np.mean(np.linalg.norm(forces, axis=1))
+                                rr.log(f"tactile/{sensor_name}/forces_3d/mean_magnitude", 
+                                      rr.Scalar(total_force_magnitude.item()))
+                                      
+                        elif data_type in ["sensor_sn", "frame_index", "send_timestamp", "recv_timestamp"]:
+                            # 显示传感器元数据
+                            value = batch[key][i]
+                            if isinstance(value, torch.Tensor):
+                                if value.dtype in [torch.int64, torch.int32]:
+                                    rr.log(f"tactile/{sensor_name}/metadata/{data_type}", rr.Scalar(value.item()))
+                                elif value.dtype in [torch.float64, torch.float32]:
+                                    rr.log(f"tactile/{sensor_name}/metadata/{data_type}", rr.Scalar(value.item()))
+                                elif isinstance(value.item(), str):
+                                    # 字符串类型的元数据，可以记录为文本
+                                    rr.log(f"tactile/{sensor_name}/metadata/{data_type}", rr.TextLog(str(value.item())))
 
     if mode == "local" and save:
         # save .rrd locally

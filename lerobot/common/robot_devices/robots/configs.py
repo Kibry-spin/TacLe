@@ -31,6 +31,7 @@ from lerobot.common.robot_devices.motors.configs import (
 from lerobot.common.robot_devices.tactile_sensors.configs import (
     TactileSensorConfig,
     Tac3DConfig,
+    GelSightConfig,
 )
 
 
