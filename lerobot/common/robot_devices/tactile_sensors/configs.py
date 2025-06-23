@@ -44,7 +44,7 @@ class Tac3DConfig(TactileSensorConfig):
         mock: Whether to use mock sensor for testing (default: False)
     """
     port: int = 9988
-    auto_calibrate: bool = True
+    auto_calibrate: bool = True 
 
 
 @TactileSensorConfig.register_subclass("gelsight")

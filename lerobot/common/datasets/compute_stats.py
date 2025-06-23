@@ -91,6 +91,14 @@ def compute_episode_stats(episode_data: dict[str, list[str] | np.ndarray], featu
             ep_ft_array = sample_images(data)  # data is a list of image paths
             axes_to_reduce = (0, 2, 3)  # keep channel dim
             keepdims = True
+        elif "tactile_image" in key and isinstance(data, np.ndarray) and data.ndim == 4:
+            # 特殊处理触觉图像数据：已经是numpy数组形式的图像数据
+            ep_ft_array = data  # data is already a np.ndarray (N, H, W, C)
+            # 如果是HWC格式，需要转换为CHW格式进行统计计算
+            if data.shape[-1] == 3:  # (N, H, W, 3) -> (N, 3, H, W)
+                ep_ft_array = np.transpose(data, (0, 3, 1, 2))
+            axes_to_reduce = (0, 2, 3)  # keep channel dim
+            keepdims = True
         else:
             ep_ft_array = data  # data is already a np.ndarray
             axes_to_reduce = 0  # compute stats over the first axis
@@ -99,7 +107,7 @@ def compute_episode_stats(episode_data: dict[str, list[str] | np.ndarray], featu
         ep_stats[key] = get_feature_stats(ep_ft_array, axis=axes_to_reduce, keepdims=keepdims)
 
         # finally, we normalize and remove batch dim for images
-        if features[key]["dtype"] in ["image", "video"]:
+        if features[key]["dtype"] in ["image", "video"] or "tactile_image" in key:
             ep_stats[key] = {
                 k: v if k == "count" else np.squeeze(v / 255.0, axis=0) for k, v in ep_stats[key].items()
             }
@@ -119,7 +127,7 @@ def _assert_type_and_shape(stats_list: list[dict[str, dict]]):
                     raise ValueError("Number of dimensions must be at least 1, and is 0 instead.")
                 if k == "count" and v.shape != (1,):
                     raise ValueError(f"Shape of 'count' must be (1), but is {v.shape} instead.")
-                if "image" in fkey and k != "count" and v.shape != (3, 1, 1):
+                if ("observation.images." in fkey or (fkey.endswith("image") and "tactile" not in fkey)) and k != "count" and v.shape != (3, 1, 1):
                     raise ValueError(f"Shape of '{k}' must be (3,1,1), but is {v.shape} instead.")
 
 

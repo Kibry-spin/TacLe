@@ -31,6 +31,7 @@ python lerobot/scripts/control_robot.py \
 python lerobot/scripts/control_robot.py \
     --robot.type=so100 \
     --robot.cameras='{}' \
+    --robot.tactile_sensors='{}' \
     --control.type=teleoperate
 
 # Add the cameras from the robot definition to visualize them:
@@ -54,15 +55,15 @@ python lerobot/scripts/control_robot.py \
     --control.type=record \
     --control.fps=30 \
     --control.single_task="Grasp a lego block and put it in the bin." \
-    --control.repo_id=$USER/test_dataset \
+    --control.repo_id=$USER/test_gel_tac3d12 \
     --control.num_episodes=1 \
-    --control.push_to_hub=true
+    --control.push_to_hub=false
 ```
 
 - Visualize dataset:
 ```bash
 python lerobot/scripts/visualize_dataset.py \
-    --repo-id $USER/test_dataset1 \
+    --repo-id $USER/test_gel_tac3d1 \
     --episode-index 0
 ```
 

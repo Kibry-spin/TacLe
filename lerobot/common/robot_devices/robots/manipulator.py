@@ -22,6 +22,8 @@ import json
 import logging
 import time
 import warnings
+import signal
+import atexit
 from pathlib import Path
 
 import numpy as np
@@ -173,6 +175,43 @@ class ManipulatorRobot:
 
         self.is_connected = False
         self.logs = {}
+        
+        # Register signal handlers for graceful shutdown
+        self._original_sigint_handler = signal.signal(signal.SIGINT, self._signal_handler)
+        self._original_sigterm_handler = signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        # Register atexit handler as fallback
+        atexit.register(self._cleanup_at_exit)
+
+    def _signal_handler(self, signum, frame):
+        """Handle interrupt signals to ensure proper cleanup."""
+        print(f"\nReceived signal {signum}. Cleaning up ManipulatorRobot...")
+        try:
+            if self.is_connected:
+                self.disconnect()
+        except Exception as e:
+            print(f"Error during signal cleanup: {e}")
+        finally:
+            # Restore original handler and re-raise signal
+            if signum == signal.SIGINT:
+                signal.signal(signal.SIGINT, self._original_sigint_handler)
+            elif signum == signal.SIGTERM:
+                signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+            
+            # Re-raise the signal to allow normal termination
+            if signum == signal.SIGINT:
+                raise KeyboardInterrupt()
+            else:
+                exit(1)
+
+    def _cleanup_at_exit(self):
+        """Cleanup function called at program exit."""
+        try:
+            if getattr(self, 'is_connected', False):
+                print("Cleanup at exit: disconnecting robot...")
+                self.disconnect()
+        except Exception as e:
+            print(f"Error during exit cleanup: {e}")
 
     def get_motor_names(self, arms: dict[str, MotorsBus]) -> list:
         motor_names = []
@@ -202,7 +241,18 @@ class ManipulatorRobot:
         tactile_ft = {}
         for name in self.tactile_sensors:
             sensor = self.tactile_sensors[name]
-            sensor_type = getattr(sensor.config, 'type', 'unknown')
+            
+            # 通过类名检测传感器类型
+            sensor_type = 'unknown'
+            if hasattr(sensor, 'config'):
+                config_class_name = sensor.config.__class__.__name__.lower()
+                if 'gelsight' in config_class_name:
+                    sensor_type = 'gelsight'
+                elif 'tac3d' in config_class_name:
+                    sensor_type = 'tac3d'
+                # 也检查是否有type属性
+                elif hasattr(sensor.config, 'type'):
+                    sensor_type = sensor.config.type
             
             # 基本元数据 (所有传感器通用)
             tactile_ft[f"observation.tactile.{name}.sensor_sn"] = {
@@ -228,32 +278,32 @@ class ManipulatorRobot:
             
             if sensor_type == 'tac3d':
                 # Tac3D传感器特有的三维数据阵列 (400个标志点，每个3维坐标)
-                tactile_ft[f"observation.tactile.{name}.positions_3d"] = {
-                    "dtype": "float64",
-                    "shape": (400, 3),
-                    "names": ["marker_id", "coordinate"],
-                }
-                tactile_ft[f"observation.tactile.{name}.displacements_3d"] = {
-                    "dtype": "float64",
-                    "shape": (400, 3), 
-                    "names": ["marker_id", "coordinate"],
-                }
-                tactile_ft[f"observation.tactile.{name}.forces_3d"] = {
-                    "dtype": "float64",
-                    "shape": (400, 3),
-                    "names": ["marker_id", "coordinate"],
-                }
-                # 合成力和力矩
-                tactile_ft[f"observation.tactile.{name}.resultant_force"] = {
-                    "dtype": "float64",
-                    "shape": (3,),
-                    "names": ["x", "y", "z"],
-                }
-                tactile_ft[f"observation.tactile.{name}.resultant_moment"] = {
-                    "dtype": "float64",
-                    "shape": (3,),
-                    "names": ["x", "y", "z"],
-                }
+            tactile_ft[f"observation.tactile.{name}.positions_3d"] = {
+                "dtype": "float64",
+                "shape": (400, 3),
+                "names": ["marker_id", "coordinate"],
+            }
+            tactile_ft[f"observation.tactile.{name}.displacements_3d"] = {
+                "dtype": "float64",
+                "shape": (400, 3), 
+                "names": ["marker_id", "coordinate"],
+            }
+            tactile_ft[f"observation.tactile.{name}.forces_3d"] = {
+                "dtype": "float64",
+                "shape": (400, 3),
+                "names": ["marker_id", "coordinate"],
+            }
+            # 合成力和力矩
+            tactile_ft[f"observation.tactile.{name}.resultant_force"] = {
+                "dtype": "float64",
+                "shape": (3,),
+                "names": ["x", "y", "z"],
+            }
+            tactile_ft[f"observation.tactile.{name}.resultant_moment"] = {
+                "dtype": "float64",
+                "shape": (3,),
+                "names": ["x", "y", "z"],
+            }
             elif sensor_type == 'gelsight':
                 # GelSight传感器特有的图像数据
                 # 获取图像尺寸配置
@@ -609,42 +659,42 @@ class ManipulatorRobot:
                 
                 if sensor_type == 'tac3d':
                     # Tac3D传感器的三维数据阵列
-                    if '3D_Positions' in data and data['3D_Positions'] is not None:
-                        positions = data['3D_Positions']
-                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    
-                    if '3D_Displacements' in data and data['3D_Displacements'] is not None:
-                        displacements = data['3D_Displacements'] 
-                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    
-                    if '3D_Forces' in data and data['3D_Forces'] is not None:
-                        forces_3d = data['3D_Forces']
-                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    
-                    # 合成力和力矩
-                    if 'resultant_force' in data and data['resultant_force'] is not None:
-                        force = data['resultant_force']
-                        if force.size >= 3:
-                            tactile_data[f"{name}_resultant_force"] = torch.tensor([force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64)
-                        else:
-                            tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                if '3D_Positions' in data and data['3D_Positions'] is not None:
+                    positions = data['3D_Positions']
+                    tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Displacements' in data and data['3D_Displacements'] is not None:
+                    displacements = data['3D_Displacements'] 
+                    tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Forces' in data and data['3D_Forces'] is not None:
+                    forces_3d = data['3D_Forces']
+                    tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                # 合成力和力矩
+                if 'resultant_force' in data and data['resultant_force'] is not None:
+                    force = data['resultant_force']
+                    if force.size >= 3:
+                        tactile_data[f"{name}_resultant_force"] = torch.tensor([force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64)
                     else:
                         tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    
-                    if 'resultant_moment' in data and data['resultant_moment'] is not None:
-                        moment = data['resultant_moment']
-                        if moment.size >= 3:
-                            tactile_data[f"{name}_resultant_moment"] = torch.tensor([moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64)
-                        else:
-                            tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                
+                if 'resultant_moment' in data and data['resultant_moment'] is not None:
+                    moment = data['resultant_moment']
+                    if moment.size >= 3:
+                        tactile_data[f"{name}_resultant_moment"] = torch.tensor([moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64)
                     else:
                         tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
                         
                 elif sensor_type == 'gelsight':
                     # GelSight传感器的图像数据
@@ -655,17 +705,11 @@ class ManipulatorRobot:
                         # 兼容旧版本的image字段
                         image = data['image']
                         tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
-                    else:
-                        # 创建默认图像
-                        imgh = getattr(sensor.config, 'imgh', 240)
-                        imgw = getattr(sensor.config, 'imgw', 320)
-                        tactile_data[f"{name}_tactile_image"] = torch.zeros((imgh, imgw, 3), dtype=torch.uint8)
-                
-                else:
+            else:
                     # 未知传感器类型，使用基本的力数据格式
                     tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
                     tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-                    
+                
             else:
                 # 如果没有数据，根据传感器类型填充默认值
                 tactile_data[f"{name}_sensor_sn"] = ''
@@ -674,11 +718,11 @@ class ManipulatorRobot:
                 tactile_data[f"{name}_recv_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
                 
                 if sensor_type == 'tac3d':
-                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
                 elif sensor_type == 'gelsight':
                     imgh = getattr(sensor.config, 'imgh', 240)
                     imgw = getattr(sensor.config, 'imgw', 320)
@@ -706,10 +750,10 @@ class ManipulatorRobot:
             
             if sensor_type == 'tac3d':
                 # Tac3D传感器特有的三维数据
-                obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
-                obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
-                obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
-                obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+            obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+            obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+            obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+            obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
                 obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
             elif sensor_type == 'gelsight':
                 # GelSight传感器特有的图像数据
@@ -719,8 +763,12 @@ class ManipulatorRobot:
                 if f"{name}_resultant_force" in tactile_data:
                     obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
                 if f"{name}_resultant_moment" in tactile_data:
-                    obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
-        return obs_dict
+            obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+
+        # 创建action字典
+        action_dict = {"action": action}
+        
+        return obs_dict, action_dict
 
     def capture_observation(self):
         """The returned observations do not have a batch dimension."""
@@ -770,42 +818,42 @@ class ManipulatorRobot:
                 
                 if sensor_type == 'tac3d':
                     # Tac3D传感器的三维数据阵列
-                    if '3D_Positions' in data and data['3D_Positions'] is not None:
-                        positions = data['3D_Positions']
-                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    
-                    if '3D_Displacements' in data and data['3D_Displacements'] is not None:
-                        displacements = data['3D_Displacements'] 
-                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    
-                    if '3D_Forces' in data and data['3D_Forces'] is not None:
-                        forces_3d = data['3D_Forces']
-                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    
-                    # 合成力和力矩
-                    if 'resultant_force' in data and data['resultant_force'] is not None:
-                        force = data['resultant_force']
-                        if force.size >= 3:
-                            tactile_data[f"{name}_resultant_force"] = torch.tensor([force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64)
-                        else:
-                            tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                if '3D_Positions' in data and data['3D_Positions'] is not None:
+                    positions = data['3D_Positions']
+                    tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Displacements' in data and data['3D_Displacements'] is not None:
+                    displacements = data['3D_Displacements'] 
+                    tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                if '3D_Forces' in data and data['3D_Forces'] is not None:
+                    forces_3d = data['3D_Forces']
+                    tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                else:
+                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                
+                # 合成力和力矩
+                if 'resultant_force' in data and data['resultant_force'] is not None:
+                    force = data['resultant_force']
+                    if force.size >= 3:
+                        tactile_data[f"{name}_resultant_force"] = torch.tensor([force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64)
                     else:
                         tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    
-                    if 'resultant_moment' in data and data['resultant_moment'] is not None:
-                        moment = data['resultant_moment']
-                        if moment.size >= 3:
-                            tactile_data[f"{name}_resultant_moment"] = torch.tensor([moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64)
-                        else:
-                            tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                
+                if 'resultant_moment' in data and data['resultant_moment'] is not None:
+                    moment = data['resultant_moment']
+                    if moment.size >= 3:
+                        tactile_data[f"{name}_resultant_moment"] = torch.tensor([moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64)
                     else:
                         tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                else:
+                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
                         
                 elif sensor_type == 'gelsight':
                     # GelSight传感器的图像数据
@@ -816,17 +864,11 @@ class ManipulatorRobot:
                         # 兼容旧版本的image字段
                         image = data['image']
                         tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
-                    else:
-                        # 创建默认图像
-                        imgh = getattr(sensor.config, 'imgh', 240)
-                        imgw = getattr(sensor.config, 'imgw', 320)
-                        tactile_data[f"{name}_tactile_image"] = torch.zeros((imgh, imgw, 3), dtype=torch.uint8)
-                
-                else:
+            else:
                     # 未知传感器类型，使用基本的力数据格式
                     tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
                     tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-                    
+                
             else:
                 # 如果没有数据，根据传感器类型填充默认值
                 tactile_data[f"{name}_sensor_sn"] = ''
@@ -835,11 +877,11 @@ class ManipulatorRobot:
                 tactile_data[f"{name}_recv_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
                 
                 if sensor_type == 'tac3d':
-                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
+                tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
                 elif sensor_type == 'gelsight':
                     imgh = getattr(sensor.config, 'imgh', 240)
                     imgw = getattr(sensor.config, 'imgw', 320)
@@ -867,10 +909,10 @@ class ManipulatorRobot:
             
             if sensor_type == 'tac3d':
                 # Tac3D传感器特有的三维数据
-                obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
-                obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
-                obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
-                obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+            obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+            obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+            obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+            obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
                 obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
             elif sensor_type == 'gelsight':
                 # GelSight传感器特有的图像数据
@@ -880,7 +922,7 @@ class ManipulatorRobot:
                 if f"{name}_resultant_force" in tactile_data:
                     obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
                 if f"{name}_resultant_moment" in tactile_data:
-                    obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+            obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
         return obs_dict
 
     def send_action(self, action: torch.Tensor) -> torch.Tensor:
@@ -933,20 +975,75 @@ class ManipulatorRobot:
                 "ManipulatorRobot is not connected. You need to run `robot.connect()` before disconnecting."
             )
 
+        # Disconnect follower arms
         for name in self.follower_arms:
+            try:
             self.follower_arms[name].disconnect()
+                print(f"Follower arm {name} disconnected successfully.")
+            except Exception as e:
+                print(f"Warning: Error disconnecting follower arm {name}: {e}")
 
+        # Disconnect leader arms
         for name in self.leader_arms:
+            try:
             self.leader_arms[name].disconnect()
+                print(f"Leader arm {name} disconnected successfully.")
+            except Exception as e:
+                print(f"Warning: Error disconnecting leader arm {name}: {e}")
 
+        # Disconnect cameras
         for name in self.cameras:
+            try:
             self.cameras[name].disconnect()
+                print(f"Camera {name} disconnected successfully.")
+            except Exception as e:
+                print(f"Warning: Error disconnecting camera {name}: {e}")
 
+        # Disconnect tactile sensors with extra care
         for name in self.tactile_sensors:
+            try:
+                print(f"Disconnecting tactile sensor {name}...")
             self.tactile_sensors[name].disconnect()
+                print(f"Tactile sensor {name} disconnected successfully.")
+            except Exception as e:
+                print(f"Warning: Error disconnecting tactile sensor {name}: {e}")
+                # For GelSight sensors, try to force cleanup
+                try:
+                    sensor = self.tactile_sensors[name]
+                    if hasattr(sensor, '_device') and sensor._device is not None:
+                        if hasattr(sensor._device, 'release'):
+                            print(f"Force releasing {name} device...")
+                            sensor._device.release()
+                        sensor._device = None
+                    if hasattr(sensor, '_connected'):
+                        sensor._connected = False
+                    print(f"Force cleanup completed for {name}")
+                except Exception as force_error:
+                    print(f"Force cleanup failed for {name}: {force_error}")
 
         self.is_connected = False
+        print("ManipulatorRobot disconnected successfully.")
 
     def __del__(self):
+        """Destructor to ensure safe cleanup."""
+        try:
         if getattr(self, "is_connected", False):
+                print("ManipulatorRobot destructor: forcing disconnect...")
             self.disconnect()
+        except Exception as e:
+            print(f"Warning: Error in ManipulatorRobot destructor: {e}")
+            # Force cleanup tactile sensors as last resort
+            try:
+                for name in getattr(self, 'tactile_sensors', {}):
+                    try:
+                        sensor = self.tactile_sensors[name]
+                        if hasattr(sensor, '_device') and sensor._device:
+                            if hasattr(sensor._device, 'release'):
+                                sensor._device.release()
+                            sensor._device = None
+                        if hasattr(sensor, '_connected'):
+                            sensor._connected = False
+                    except:
+                        pass
+            except:
+                pass

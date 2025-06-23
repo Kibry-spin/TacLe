@@ -564,7 +564,7 @@ class So100RobotConfig(ManipulatorRobotConfig):
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {
             "laptop": OpenCVCameraConfig(
-                camera_index=2,
+                camera_index=0,
                 fps=30,
                 width=640,
                 height=480,
@@ -576,7 +576,18 @@ class So100RobotConfig(ManipulatorRobotConfig):
     # Tac3D sensor on gripper tip
     tactile_sensors: dict[str, TactileSensorConfig] = field(
         default_factory=lambda: {
-            "main_gripper": Tac3DConfig(
+            # "main_gripper": Tac3DConfig(
+            #     port=9988,
+            #     auto_calibrate=True,
+            # ),
+            "main_gripper0": GelSightConfig(
+                device_name="GelSight Mini",
+                imgh=240,
+                imgw=320,
+                raw_imgh=2464,
+                raw_imgw=3280,
+            ),
+            "main_gripper1": Tac3DConfig(
                 port=9988,
                 auto_calibrate=True,
             ),

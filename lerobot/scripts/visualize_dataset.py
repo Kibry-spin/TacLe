@@ -196,29 +196,29 @@ def visualize_dataset(
                         data_type = parts[3]    # positions_3d, forces_3d, tactile_image, etc.
                         
                         if data_type == "resultant_force":
-                            # 显示Tac3D合成力的各个分量
+                            # Tac3D传感器：显示xyz方向的合力分量
                             force = batch[key][i].numpy()  # (3,)
-                            for dim_idx, val in enumerate(force):
-                                rr.log(f"tactile/{sensor_name}/resultant_force/{['x', 'y', 'z'][dim_idx]}", 
-                                      rr.Scalar(val.item()))
-                            # 显示合成力大小
-                            force_magnitude = np.linalg.norm(force)
-                            rr.log(f"tactile/{sensor_name}/resultant_force/magnitude", 
-                                  rr.Scalar(force_magnitude.item()))
-                                  
-                        elif data_type == "resultant_moment":
-                            # 显示Tac3D合成力矩的各个分量
-                            moment = batch[key][i].numpy()  # (3,)
-                            for dim_idx, val in enumerate(moment):
-                                rr.log(f"tactile/{sensor_name}/resultant_moment/{['x', 'y', 'z'][dim_idx]}", 
-                                      rr.Scalar(val.item()))
-                            # 显示合成力矩大小
-                            moment_magnitude = np.linalg.norm(moment)
-                            rr.log(f"tactile/{sensor_name}/resultant_moment/magnitude", 
-                                  rr.Scalar(moment_magnitude.item()))
-                                  
+                            
+                            # 设置合理的力值范围（可根据实际传感器规格调整）
+                            min_force = -50.0  # 允许负值（拉力）
+                            max_force = 50.0   # 最大推力
+                            
+                            # 分别显示x、y、z方向的力分量
+                            for dim_idx, force_component in enumerate(force):
+                                axis_name = ['x', 'y', 'z'][dim_idx]
+                                
+                                # 限制显示范围避免异常值影响可视化
+                                force_clamped = np.clip(force_component, min_force, max_force)
+                                
+                                # 可选：添加原始值记录（用于调试）
+                                if abs(force_component) > max_force:
+                                    print(f"Warning: Force {axis_name} component {force_component:.2f} exceeds max range ±{max_force}")
+                                
+                                rr.log(f"tactile/Tac3D/{sensor_name}/force_{axis_name}", 
+                                      rr.Scalar(force_clamped.item()))
+
                         elif data_type == "tactile_image":
-                            # 显示GelSight触觉图像
+                            # GelSight传感器：显示触觉图像
                             tactile_image = batch[key][i]  # (H, W, 3) 或 (3, H, W)
                             
                             # 检查图像数据格式并转换为正确格式
@@ -256,56 +256,7 @@ def visualize_dataset(
                                     tactile_image_np = tactile_image_np.astype(np.uint8)
                             
                             # 记录触觉图像
-                            rr.log(f"tactile/{sensor_name}/tactile_image", rr.Image(tactile_image_np))
-                            
-                            # 可选：计算和显示图像统计信息
-                            mean_intensity = np.mean(tactile_image_np)
-                            rr.log(f"tactile/{sensor_name}/image_stats/mean_intensity", rr.Scalar(mean_intensity))
-                            
-                            # 可选：显示图像的RGB通道分别的平均值
-                            if tactile_image_np.shape[2] == 3:
-                                r_mean = np.mean(tactile_image_np[:, :, 0])
-                                g_mean = np.mean(tactile_image_np[:, :, 1])  
-                                b_mean = np.mean(tactile_image_np[:, :, 2])
-                                rr.log(f"tactile/{sensor_name}/image_stats/r_channel", rr.Scalar(r_mean))
-                                rr.log(f"tactile/{sensor_name}/image_stats/g_channel", rr.Scalar(g_mean))
-                                rr.log(f"tactile/{sensor_name}/image_stats/b_channel", rr.Scalar(b_mean))
-                                
-                        elif data_type == "positions_3d":
-                            # 显示Tac3D 3D位置数据（如果有的话）
-                            positions = batch[key][i].numpy()  # (N, 3) 
-                            if positions.size > 0:
-                                # 可以显示位置点的统计信息或可视化
-                                mean_position = np.mean(positions, axis=0)
-                                for dim_idx, val in enumerate(mean_position):
-                                    rr.log(f"tactile/{sensor_name}/positions_3d/mean_{['x', 'y', 'z'][dim_idx]}", 
-                                          rr.Scalar(val.item()))
-                                          
-                        elif data_type == "forces_3d":
-                            # 显示Tac3D 3D力数据（如果有的话）
-                            forces = batch[key][i].numpy()  # (N, 3)
-                            if forces.size > 0:
-                                # 显示力的统计信息
-                                mean_force = np.mean(forces, axis=0)
-                                for dim_idx, val in enumerate(mean_force):
-                                    rr.log(f"tactile/{sensor_name}/forces_3d/mean_{['x', 'y', 'z'][dim_idx]}", 
-                                          rr.Scalar(val.item()))
-                                # 显示力的总体大小
-                                total_force_magnitude = np.mean(np.linalg.norm(forces, axis=1))
-                                rr.log(f"tactile/{sensor_name}/forces_3d/mean_magnitude", 
-                                      rr.Scalar(total_force_magnitude.item()))
-                                      
-                        elif data_type in ["sensor_sn", "frame_index", "send_timestamp", "recv_timestamp"]:
-                            # 显示传感器元数据
-                            value = batch[key][i]
-                            if isinstance(value, torch.Tensor):
-                                if value.dtype in [torch.int64, torch.int32]:
-                                    rr.log(f"tactile/{sensor_name}/metadata/{data_type}", rr.Scalar(value.item()))
-                                elif value.dtype in [torch.float64, torch.float32]:
-                                    rr.log(f"tactile/{sensor_name}/metadata/{data_type}", rr.Scalar(value.item()))
-                                elif isinstance(value.item(), str):
-                                    # 字符串类型的元数据，可以记录为文本
-                                    rr.log(f"tactile/{sensor_name}/metadata/{data_type}", rr.TextLog(str(value.item())))
+                            rr.log(f"tactile/GelSight/{sensor_name}/tactile_image", rr.Image(tactile_image_np))
 
     if mode == "local" and save:
         # save .rrd locally

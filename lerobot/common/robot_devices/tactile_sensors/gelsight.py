@@ -206,8 +206,56 @@ class GelSightSensor:
             # Get image from device
             image = self._device.get_image()
             
+            # Debug: Print image info for troubleshooting
             if image is None:
-                return {}
+                # Try alternative method or return empty data
+                print(f"Warning: GelSight sensor returned None image (attempt {self._frame_count + 1})")
+                return self._create_empty_data()
+            
+            # Validate image data
+            if not isinstance(image, np.ndarray):
+                print(f"Warning: GelSight sensor returned non-numpy data: {type(image)}")
+                return self._create_empty_data()
+            
+            if image.size == 0:
+                print(f"Warning: GelSight sensor returned empty image array")
+                return self._create_empty_data()
+            
+            # Validate image shape
+            expected_shapes = [
+                (self.imgh, self.imgw, 3),      # Processed image
+                (self.raw_imgh, self.raw_imgw, 3),  # Raw image
+                (self.imgh, self.imgw),         # Grayscale processed
+                (self.raw_imgh, self.raw_imgw), # Grayscale raw
+            ]
+            
+            if image.shape not in expected_shapes:
+                print(f"Warning: Unexpected image shape: {image.shape}, expected one of {expected_shapes}")
+                # Try to reshape if possible
+                if image.size == self.imgh * self.imgw * 3:
+                    print(f"Attempting to reshape to ({self.imgh}, {self.imgw}, 3)")
+                    try:
+                        image = image.reshape(self.imgh, self.imgw, 3)
+                    except Exception as reshape_error:
+                        print(f"Reshape failed: {reshape_error}")
+                        return self._create_empty_data()
+                else:
+                    print(f"Cannot reshape: image size {image.size} doesn't match expected size {self.imgh * self.imgw * 3}")
+                    return self._create_empty_data()
+
+            # Ensure image is in correct format (HWC, uint8)
+            if len(image.shape) == 2:  # Grayscale
+                image = np.stack([image, image, image], axis=-1)  # Convert to RGB
+            
+            if image.dtype != np.uint8:
+                if image.dtype in [np.float32, np.float64]:
+                    # Assume normalized values [0,1] or [0,255]
+                    if image.max() <= 1.0:
+                        image = (image * 255).astype(np.uint8)
+                    else:
+                        image = np.clip(image, 0, 255).astype(np.uint8)
+                else:
+                    image = image.astype(np.uint8)
 
             self._frame_count += 1
             current_time = time.time()
@@ -226,7 +274,7 @@ class GelSightSensor:
                 
                 # GelSight specific data
                 'tactile_image': image,  # Main tactile image data
-                'image_shape': image.shape if image is not None else None,
+                'image_shape': image.shape,
                 
                 # Original format for backward compatibility
                 'timestamp': current_time,
@@ -242,9 +290,49 @@ class GelSightSensor:
                 }
             }
             
+        except KeyboardInterrupt:
+            # Handle KeyboardInterrupt specifically to ensure proper cleanup
+            print(f"KeyboardInterrupt received while reading from GelSight sensor {self.device_name}")
+            # Force disconnect to release resources
+            try:
+                self.disconnect()
+            except:
+                pass
+            # Re-raise the KeyboardInterrupt to allow proper program termination
+            raise
         except Exception as e:
             print(f"Error reading from GelSight sensor: {e}")
-            return {}
+            return self._create_empty_data()
+
+    def _create_empty_data(self) -> dict:
+        """Create empty data structure when sensor read fails."""
+        current_time = time.time()
+        empty_image = np.zeros((self.imgh, self.imgw, 3), dtype=np.uint8)
+        
+        return {
+            # LeRobot standard fields
+            'SN': self.device_name,
+            'index': self._frame_count,
+            'sendTimestamp': current_time,
+            'recvTimestamp': current_time,
+            
+            # GelSight specific data
+            'tactile_image': empty_image,
+            'image_shape': empty_image.shape,
+            
+            # Original format for backward compatibility
+            'timestamp': current_time,
+            'device_name': self.device_name,
+            'frame_index': self._frame_count,
+            'image': empty_image,
+            'sensor_config': {
+                'imgh': self.imgh,
+                'imgw': self.imgw,
+                'framerate': self.framerate,
+                'raw_imgh': self.raw_imgh,
+                'raw_imgw': self.raw_imgw,
+            }
+        }
 
     def async_read(self) -> dict:
         """Asynchronously read tactile data from the sensor (same as read for GelSight)."""
@@ -277,20 +365,28 @@ class GelSightSensor:
     def disconnect(self):
         """Disconnect from the sensor."""
         if not self._connected:
-            raise RobotDeviceNotConnectedError(f"GelSightSensor({self.device_name}) is not connected.")
+            print(f"GelSightSensor({self.device_name}) is already disconnected.")
+            return
 
         try:
             if self._device and hasattr(self._device, 'release'):
+                print(f"Releasing GelSight device {self.device_name}...")
                 self._device.release()
+                print(f"GelSight device {self.device_name} released successfully.")
         except Exception as e:
-            print(f"Warning: Error during sensor disconnect: {e}")
+            print(f"Warning: Error during GelSight sensor disconnect: {e}")
         finally:
             self._device = None
             self._connected = False
+            print(f"GelSightSensor({self.device_name}) disconnected.")
 
     def __del__(self):
-        if getattr(self, "_connected", False):
-            self.disconnect()
+        """Destructor to ensure resources are released."""
+        try:
+            if getattr(self, "_connected", False):
+                self.disconnect()
+        except:
+            pass
 
 
 if __name__ == "__main__":
