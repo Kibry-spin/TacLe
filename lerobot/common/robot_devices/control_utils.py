@@ -150,9 +150,9 @@ def init_keyboard_listener():
     def on_press(key):
         try:
             if key == keyboard.Key.right:
-                print("Right arrow key pressed. Exiting loop...")
+                print("Right arrow key pressed. Exiting current episode...")
                 events["exit_early"] = True
-                # 设置强制退出标志，确保程序能立即响应
+                # 设置强制退出标志用于跳过当前episode的重置和校准
                 events["force_exit"] = True
             elif key == keyboard.Key.left:
                 print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
@@ -299,6 +299,8 @@ def control_loop(
         # 检查强制退出标志，确保能立即响应
         if events.get("force_exit", False):
             print("检测到强制退出信号，立即停止...")
+            # 在控制循环中立即重置，避免影响后续操作
+            events["force_exit"] = False
             break
 
 
@@ -307,14 +309,43 @@ def reset_environment(robot, events, reset_time_s, fps):
     if has_method(robot, "teleop_safety_stop"):
         robot.teleop_safety_stop()
 
-    # 重新校准触觉传感器
-    if hasattr(robot, 'tactile_sensors') and robot.tactile_sensors:
-        print("正在重新校准触觉传感器...")
-        for name, sensor in robot.tactile_sensors.items():
-            if sensor.is_connected():
-                print(f"校准传感器 {name}...")
-                sensor.calibrate()
-        print("触觉传感器校准完成")
+    # 检查是否强制退出，如果是则跳过校准
+    if events.get("force_exit", False):
+        print("检测到强制退出标志，跳过触觉传感器校准")
+    else:
+        # 重新校准触觉传感器（带超时保护）
+        if hasattr(robot, 'tactile_sensors') and robot.tactile_sensors:
+            print("正在重新校准触觉传感器...")
+            
+            for name, sensor in robot.tactile_sensors.items():
+                if sensor.is_connected():
+                    try:
+                        print(f"校准传感器 {name}...")
+                        
+                        # 添加超时保护，避免校准过程卡住
+                        import signal
+                        
+                        def calibration_timeout_handler(signum, frame):
+                            raise TimeoutError(f"Sensor {name} calibration timeout")
+                        
+                        # 设置15秒校准超时
+                        signal.signal(signal.SIGALRM, calibration_timeout_handler)
+                        signal.alarm(15)
+                        
+                        try:
+                            sensor.calibrate()
+                            print(f"传感器 {name} 校准完成")
+                        except TimeoutError:
+                            print(f"警告: 传感器 {name} 校准超时，跳过校准")
+                        finally:
+                            signal.alarm(0)  # 取消超时
+                            
+                    except Exception as e:
+                        print(f"警告: 传感器 {name} 校准失败: {e}")
+                        # 继续处理其他传感器，不中断整个流程
+                        continue
+            
+            print("触觉传感器校准流程完成")
 
     control_loop(
         robot=robot,
@@ -325,42 +356,13 @@ def reset_environment(robot, events, reset_time_s, fps):
     )
 
 
-def stop_recording(robot, listener, display_data, force_cleanup=False, disconnect_tactile=True):
+def stop_recording(robot, listener, display_data, force_cleanup=False):
     """Stop recording and properly cleanup all resources."""
     print("正在停止记录并清理资源...")
     
     try:
         # 根据情况选择正常断开或强制断开
-        if disconnect_tactile:
-            robot.disconnect(force=force_cleanup)
-        else:
-            # 只断开机械臂和相机，不断开触觉传感器（已经提前断开）
-            print("断开机械臂和相机...")
-            # Disconnect follower arms
-            for name in robot.follower_arms:
-                try:
-                    robot.follower_arms[name].disconnect()
-                    print(f"Follower arm {name} disconnected successfully.")
-                except Exception as e:
-                    print(f"Warning: Error disconnecting follower arm {name}: {e}")
-
-            # Disconnect leader arms
-            for name in robot.leader_arms:
-                try:
-                    robot.leader_arms[name].disconnect()
-                    print(f"Leader arm {name} disconnected successfully.")
-                except Exception as e:
-                    print(f"Warning: Error disconnecting leader arm {name}: {e}")
-
-            # Disconnect cameras
-            for name in robot.cameras:
-                try:
-                    robot.cameras[name].disconnect()
-                    print(f"Camera {name} disconnected successfully.")
-                except Exception as e:
-                    print(f"Warning: Error disconnecting camera {name}: {e}")
-            
-            robot.is_connected = False
+        robot.disconnect(force=force_cleanup)
         print("机器人连接已断开")
     except Exception as e:
         print(f"机器人断开连接时出错: {e}")

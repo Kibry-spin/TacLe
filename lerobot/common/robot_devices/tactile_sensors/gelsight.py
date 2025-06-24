@@ -448,6 +448,16 @@ class GelSightSensor:
             self._connected = False
             print(f"GelSightSensor({self.device_name}) disconnected.")
 
+    def calibrate(self):
+        """
+        Calibrate the GelSight sensor.
+        
+        GelSight sensors typically don't require explicit calibration like force-based sensors.
+        This method is provided for interface consistency with other tactile sensors.
+        """
+        print(f"GelSight sensor {self.device_name} does not require calibration.")
+        pass
+
     def __del__(self):
         """Destructor to ensure resources are released."""
         try:

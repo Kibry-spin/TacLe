@@ -199,8 +199,15 @@ def say(text, blocking=False):
 def log_say(text, play_sounds, blocking=False):
     logging.info(text)
 
+    # 检查环境变量，允许完全禁用语音播放
+    if os.getenv("LEROBOT_DISABLE_AUDIO", "false").lower() in ["true", "1", "yes"]:
+        return
+        
     if play_sounds:
-        say(text, blocking)
+        try:
+            say(text, blocking)
+        except Exception as e:
+            logging.warning(f"Speech synthesis failed: {e}. Set LEROBOT_DISABLE_AUDIO=true to disable audio.")
 
 
 def get_channel_first_image_shape(image_shape: tuple) -> tuple:

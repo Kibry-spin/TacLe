@@ -84,7 +84,7 @@ python lerobot/scripts/control_robot.py \
     --robot.type=so100 \
     --control.type=record \
     --control.fps 30 \
-    --control.repo_id=$USER/TEST-Tactile \
+    --control.repo_id=$USER/TEST-Tactile1 \
     --control.num_episodes=5 \
     --control.warmup_time_s=2 \
     --control.episode_time_s=30 \
@@ -312,8 +312,8 @@ def record(
         # Execute a few seconds without recording to give time to manually reset the environment
         # Current code logic doesn't allow to teleoperate during this time.
         # TODO(rcadene): add an option to enable teleoperation during reset
-        # Skip reset for the last episode to be recorded
-        if not events["stop_recording"] and (
+        # Skip reset for the last episode to be recorded OR if force exit is detected
+        if not events["stop_recording"] and not events.get("force_exit", False) and (
             (recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]
         ):
             log_say("Reset the environment", cfg.play_sounds)
@@ -344,10 +344,13 @@ def record(
         dataset.save_episode()
         recorded_episodes += 1
 
+        # 重置相关标志，让下一个episode能正常进行
+        events["exit_early"] = False
+
         if events["stop_recording"]:
             break
 
-    log_say("Stop recording", cfg.play_sounds, blocking=True)
+    log_say("Stop recording", cfg.play_sounds, blocking=False)
     
     # 在数据保存完成后，立即断开触觉传感器避免死锁
     print("正在断开触觉传感器连接...")
@@ -362,7 +365,46 @@ def record(
     
     # 检查是否需要强制清理（右箭头键强制退出）
     force_cleanup = events.get("force_exit", False)
-    stop_recording(robot, listener, cfg.display_data, force_cleanup=force_cleanup, disconnect_tactile=False)
+    print(f"开始停止录制流程，强制清理模式: {force_cleanup}")
+    
+    try:
+        # 添加超时机制，避免卡住
+        import signal
+        
+        def timeout_handler(signum, frame):
+            print("警告：停止录制超时，强制退出")
+            raise TimeoutError("Stop recording timeout")
+        
+        # 设置30秒超时
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(30)
+        
+        stop_recording(robot, listener, cfg.display_data, force_cleanup=force_cleanup)
+        
+        # 取消超时
+        signal.alarm(0)
+        print("停止录制流程完成")
+        
+    except TimeoutError:
+        print("停止录制超时，执行强制清理...")
+        try:
+            # 强制清理
+            robot.disconnect(force=True)
+        except:
+            pass
+        try:
+            if listener:
+                listener.stop()
+        except:
+            pass
+        print("强制清理完成")
+    except Exception as e:
+        print(f"停止录制过程中出错: {e}")
+        # 仍然尝试基本清理
+        try:
+            robot.disconnect(force=True)
+        except:
+            pass
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
@@ -385,7 +427,7 @@ def replay(
     if not robot.is_connected:
         robot.connect()
 
-    log_say("Replaying episode", cfg.play_sounds, blocking=True)
+    log_say("Replaying episode", cfg.play_sounds, blocking=False)
     for idx in range(dataset.num_frames):
         start_episode_t = time.perf_counter()
 
