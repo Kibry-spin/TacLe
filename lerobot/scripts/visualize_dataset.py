@@ -159,8 +159,8 @@ def visualize_dataset(
     for batch in tqdm.tqdm(dataloader, total=len(dataloader)):
         # iterate over the batch
         for i in range(len(batch["index"])):
-            rr.set_time_sequence("frame_index", batch["frame_index"][i].item())
-            rr.set_time_seconds("timestamp", batch["timestamp"][i].item())
+            rr.set_time("frame_index", sequence=batch["frame_index"][i].item())
+            rr.set_time("timestamp", timestamp=batch["timestamp"][i].item())
 
             # display each camera image
             for key in dataset.meta.camera_keys:
@@ -170,21 +170,21 @@ def visualize_dataset(
             # display each dimension of action space (e.g. actuators command)
             if "action" in batch:
                 for dim_idx, val in enumerate(batch["action"][i]):
-                    rr.log(f"action/{dim_idx}", rr.Scalar(val.item()))
+                    rr.log(f"action/{dim_idx}", rr.Scalars(val.item()))
 
             # display each dimension of observed state space (e.g. agent position in joint space)
             if "observation.state" in batch:
                 for dim_idx, val in enumerate(batch["observation.state"][i]):
-                    rr.log(f"state/{dim_idx}", rr.Scalar(val.item()))
+                    rr.log(f"state/{dim_idx}", rr.Scalars(val.item()))
 
             if "next.done" in batch:
-                rr.log("next.done", rr.Scalar(batch["next.done"][i].item()))
+                rr.log("next.done", rr.Scalars(batch["next.done"][i].item()))
 
             if "next.reward" in batch:
-                rr.log("next.reward", rr.Scalar(batch["next.reward"][i].item()))
+                rr.log("next.reward", rr.Scalars(batch["next.reward"][i].item()))
 
             if "next.success" in batch:
-                rr.log("next.success", rr.Scalar(batch["next.success"][i].item()))
+                rr.log("next.success", rr.Scalars(batch["next.success"][i].item()))
 
             # display tactile sensor data
             for key in batch.keys():
@@ -215,7 +215,7 @@ def visualize_dataset(
                                     print(f"Warning: Force {axis_name} component {force_component:.2f} exceeds max range ±{max_force}")
                                 
                                 rr.log(f"tactile/Tac3D/{sensor_name}/force_{axis_name}", 
-                                      rr.Scalar(force_clamped.item()))
+                                      rr.Scalars(force_clamped.item()))
 
                         elif data_type == "tactile_image":
                             # GelSight传感器：显示触觉图像
