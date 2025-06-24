@@ -152,6 +152,8 @@ def init_keyboard_listener():
             if key == keyboard.Key.right:
                 print("Right arrow key pressed. Exiting loop...")
                 events["exit_early"] = True
+                # 设置强制退出标志，确保程序能立即响应
+                events["force_exit"] = True
             elif key == keyboard.Key.left:
                 print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
                 events["rerecord_episode"] = True
@@ -160,6 +162,7 @@ def init_keyboard_listener():
                 print("Escape key pressed. Stopping data recording...")
                 events["stop_recording"] = True
                 events["exit_early"] = True
+                # ESC键不使用force_exit，让程序正常保存数据
         except Exception as e:
             print(f"Error handling key press: {e}")
 
@@ -227,7 +230,7 @@ def control_loop(
         robot.connect()
 
     if events is None:
-        events = {"exit_early": False}
+        events = {"exit_early": False, "force_exit": False}
 
     if control_time_s is None:
         control_time_s = float("inf")
@@ -292,6 +295,11 @@ def control_loop(
         if events["exit_early"]:
             events["exit_early"] = False
             break
+            
+        # 检查强制退出标志，确保能立即响应
+        if events.get("force_exit", False):
+            print("检测到强制退出信号，立即停止...")
+            break
 
 
 def reset_environment(robot, events, reset_time_s, fps):
@@ -317,11 +325,57 @@ def reset_environment(robot, events, reset_time_s, fps):
     )
 
 
-def stop_recording(robot, listener, display_data):
-    robot.disconnect()
+def stop_recording(robot, listener, display_data, force_cleanup=False, disconnect_tactile=True):
+    """Stop recording and properly cleanup all resources."""
+    print("正在停止记录并清理资源...")
+    
+    try:
+        # 根据情况选择正常断开或强制断开
+        if disconnect_tactile:
+            robot.disconnect(force=force_cleanup)
+        else:
+            # 只断开机械臂和相机，不断开触觉传感器（已经提前断开）
+            print("断开机械臂和相机...")
+            # Disconnect follower arms
+            for name in robot.follower_arms:
+                try:
+                    robot.follower_arms[name].disconnect()
+                    print(f"Follower arm {name} disconnected successfully.")
+                except Exception as e:
+                    print(f"Warning: Error disconnecting follower arm {name}: {e}")
 
-    if not is_headless() and listener is not None:
-        listener.stop()
+            # Disconnect leader arms
+            for name in robot.leader_arms:
+                try:
+                    robot.leader_arms[name].disconnect()
+                    print(f"Leader arm {name} disconnected successfully.")
+                except Exception as e:
+                    print(f"Warning: Error disconnecting leader arm {name}: {e}")
+
+            # Disconnect cameras
+            for name in robot.cameras:
+                try:
+                    robot.cameras[name].disconnect()
+                    print(f"Camera {name} disconnected successfully.")
+                except Exception as e:
+                    print(f"Warning: Error disconnecting camera {name}: {e}")
+            
+            robot.is_connected = False
+        print("机器人连接已断开")
+    except Exception as e:
+        print(f"机器人断开连接时出错: {e}")
+        if not force_cleanup:
+            print("注意：如果有残留进程，请运行: python cleanup_gelsight_processes.py")
+
+    # 停止键盘监听器
+    try:
+        if not is_headless() and listener is not None:
+            listener.stop()
+            print("键盘监听器已停止")
+    except Exception as e:
+        print(f"停止键盘监听器时出错: {e}")
+        
+    print("资源清理完成")
 
 
 def sanity_check_dataset_name(repo_id, policy_cfg):

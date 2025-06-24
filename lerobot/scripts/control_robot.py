@@ -55,7 +55,7 @@ python lerobot/scripts/control_robot.py \
     --control.type=record \
     --control.fps=30 \
     --control.single_task="Grasp a lego block and put it in the bin." \
-    --control.repo_id=$USER/test_gel_tac3d12 \
+    --control.repo_id=$USER/test_tt \
     --control.num_episodes=1 \
     --control.push_to_hub=false
 ```
@@ -326,6 +326,21 @@ def record(
             dataset.clear_episode_buffer()
             continue
 
+        # 在保存数据前，停止触觉传感器的持续采集避免死锁
+        print("停止触觉传感器数据采集...")
+        if hasattr(robot, 'tactile_sensors') and robot.tactile_sensors:
+            for name, sensor in robot.tactile_sensors.items():
+                try:
+                    # 停止传感器的持续读取（如果有的话）
+                    if hasattr(sensor, 'stop_streaming'):
+                        sensor.stop_streaming()
+                        print(f"停止传感器 {name} 的流式读取")
+                    elif hasattr(sensor, '_streaming') and sensor._streaming:
+                        sensor._streaming = False
+                        print(f"停止传感器 {name} 的数据采集")
+                except Exception as e:
+                    print(f"停止传感器 {name} 数据采集时出错: {e}")
+
         dataset.save_episode()
         recorded_episodes += 1
 
@@ -333,7 +348,21 @@ def record(
             break
 
     log_say("Stop recording", cfg.play_sounds, blocking=True)
-    stop_recording(robot, listener, cfg.display_data)
+    
+    # 在数据保存完成后，立即断开触觉传感器避免死锁
+    print("正在断开触觉传感器连接...")
+    if hasattr(robot, 'tactile_sensors') and robot.tactile_sensors:
+        for name, sensor in robot.tactile_sensors.items():
+            try:
+                print(f"断开触觉传感器 {name}...")
+                sensor.disconnect()
+                print(f"触觉传感器 {name} 已断开")
+            except Exception as e:
+                print(f"断开触觉传感器 {name} 时出错: {e}")
+    
+    # 检查是否需要强制清理（右箭头键强制退出）
+    force_cleanup = events.get("force_exit", False)
+    stop_recording(robot, listener, cfg.display_data, force_cleanup=force_cleanup, disconnect_tactile=False)
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
@@ -432,7 +461,7 @@ def control_robot(cfg: ControlPipelineConfig):
     if robot.is_connected:
         # Disconnect manually to avoid a "Core dump" during process
         # termination due to camera threads not properly exiting.
-        robot.disconnect()
+        robot.disconnect(force=False)  # 程序正常结束时不强制清理
 
 
 if __name__ == "__main__":

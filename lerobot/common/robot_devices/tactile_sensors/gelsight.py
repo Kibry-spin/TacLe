@@ -73,8 +73,9 @@ except ImportError:
 
 
 def simple_test(device_name: str = "GelSight Mini", duration_s: float = 5.0):
-    """Simple test function for GelSight sensor."""
+    """Test GelSight sensor with real-time image streaming like fast_stream_device.py."""
     print(f"Testing GelSight sensor '{device_name}' for {duration_s} seconds")
+    print("Press any key to quit or wait for test to complete automatically")
     
     # Create and connect sensor
     config = GelSightConfig(device_name=device_name)
@@ -84,41 +85,128 @@ def simple_test(device_name: str = "GelSight Mini", duration_s: float = 5.0):
         sensor.connect()
         print(f"Connected to sensor: {sensor.get_sensor_info()['device_name']}")
         
-        print("Reading sensor data...")
-        print("Press 'q' to quit early or wait for test to complete")
+        print("Starting real-time image streaming...")
+        print("Image will be displayed in a window - press any key to quit")
+        
+        # Create window with fixed title
+        window_title = f"GelSight - {device_name}"
+        cv2.namedWindow(window_title, cv2.WINDOW_AUTOSIZE)
+        cv2.moveWindow(window_title, 100, 100)  # Position window
         
         start_time = time.time()
         frame_count = 0
+        fps_counter = 0
+        fps_start_time = start_time
         
-        while time.time() - start_time < duration_s:
+        while True:
+            # Check time limit
+            current_time = time.time()
+            if current_time - start_time > duration_s:
+                print(f"\nReached time limit of {duration_s} seconds")
+                break
+            
+            # Read sensor data
             data = sensor.read()
             if data and data.get('image') is not None:
                 frame_count += 1
-                timestamp = data.get('timestamp', 0)
+                fps_counter += 1
                 image = data['image']
                 
-                # Display image
-                cv2.imshow(f"GelSight - {device_name}", image)
+                # Calculate FPS every second
+                if current_time - fps_start_time >= 1.0:
+                    actual_fps = fps_counter / (current_time - fps_start_time)
+                    print(f"Frame {frame_count}: FPS: {actual_fps:.1f}, Shape: {image.shape}")
+                    fps_counter = 0
+                    fps_start_time = current_time
                 
-                # Print frame info
-                if frame_count % 10 == 0:  # Print every 10th frame
-                    print(f"Frame {frame_count}: {timestamp:.2f}s, Shape: {image.shape}")
+                # Display image in the same window
+                cv2.imshow(window_title, image)
                 
-                # Check for quit key
+                # Check for keyboard input (non-blocking)
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                if key != 255:  # Any key pressed (255 means no key)
+                    print(f"\nKey pressed (code: {key}), exiting...")
                     break
             else:
-                time.sleep(0.01)
+                print("Warning: No image data received")
+                time.sleep(0.01)  # Small delay to prevent busy loop
         
-        print(f"\nTest completed. Read {frame_count} frames in {time.time() - start_time:.1f} seconds")
+        elapsed_time = time.time() - start_time
+        avg_fps = frame_count / elapsed_time if elapsed_time > 0 else 0
+        print(f"\nTest completed:")
+        print(f"  Total frames: {frame_count}")
+        print(f"  Elapsed time: {elapsed_time:.1f} seconds")
+        print(f"  Average FPS: {avg_fps:.1f}")
         
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt received, stopping test...")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error during test: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        sensor.disconnect()
+        # Cleanup
+        try:
+            sensor.disconnect()
+        except:
+            pass
         cv2.destroyAllWindows()
-        print("Sensor disconnected")
+        print("Test cleanup completed")
+
+
+def stream_test(device_name: str = "GelSight Mini"):
+    """Continuous streaming test (like fast_stream_device.py) - runs until manually stopped."""
+    print(f"Starting continuous GelSight streaming for '{device_name}'")
+    print("Press any key in the image window to quit")
+    
+    # Create and connect sensor
+    config = GelSightConfig(device_name=device_name)
+    sensor = GelSightSensor(config)
+    
+    try:
+        sensor.connect()
+        print(f"Connected to sensor: {sensor.get_sensor_info()['device_name']}")
+        print("Streaming started... (Press any key to quit)")
+        
+        # Create window with fixed title
+        window_title = f"GelSight Stream - {device_name}"
+        cv2.namedWindow(window_title, cv2.WINDOW_AUTOSIZE)
+        cv2.moveWindow(window_title, 100, 100)  # Position window
+        
+        frame_count = 0
+        
+        while True:
+            # Read sensor data
+            data = sensor.read()
+            if data and data.get('image') is not None:
+                frame_count += 1
+                image = data['image']
+                
+                # Display image in the same window
+                cv2.imshow(window_title, image)
+                
+                # Check for keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key != 255:  # Any key pressed
+                    print(f"\nExiting after {frame_count} frames...")
+                    break
+            else:
+                # Small delay if no data
+                time.sleep(0.001)
+        
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt received, stopping stream...")
+    except Exception as e:
+        print(f"Error during streaming: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        try:
+            sensor.disconnect()
+        except:
+            pass
+        cv2.destroyAllWindows()
+        print("Streaming stopped")
 
 
 class GelSightSensor:
@@ -258,26 +346,15 @@ class GelSightSensor:
                     image = image.astype(np.uint8)
 
             self._frame_count += 1
-            current_time = time.time()
 
-            # Log timing information
+            # Standard LeRobot timestamp logging (following OpenCV camera pattern)
             self.logs["delta_timestamp_s"] = time.perf_counter() - start_time
             self.logs["timestamp_utc"] = capture_timestamp_utc()
 
-            # Return standardized data format compatible with LeRobot
+            # Return LeRobot compatible data format (following tactile sensor patterns)
             return {
-                # LeRobot standard fields for tactile sensors
-                'SN': self.device_name,  # Sensor serial number (use device name)
-                'index': self._frame_count,  # Frame index
-                'sendTimestamp': current_time,  # Send timestamp
-                'recvTimestamp': current_time,  # Receive timestamp (same for local device)
-                
-                # GelSight specific data
-                'tactile_image': image,  # Main tactile image data
-                'image_shape': image.shape,
-                
-                # Original format for backward compatibility
-                'timestamp': current_time,
+                # Use timestamp from logs for consistency with other sensors
+                'timestamp': self.logs["timestamp_utc"],
                 'device_name': self.device_name,
                 'frame_index': self._frame_count,
                 'image': image,
@@ -306,22 +383,13 @@ class GelSightSensor:
 
     def _create_empty_data(self) -> dict:
         """Create empty data structure when sensor read fails."""
-        current_time = time.time()
         empty_image = np.zeros((self.imgh, self.imgw, 3), dtype=np.uint8)
         
+        # Standard timestamp logging even for empty data
+        self.logs["timestamp_utc"] = capture_timestamp_utc()
+        
         return {
-            # LeRobot standard fields
-            'SN': self.device_name,
-            'index': self._frame_count,
-            'sendTimestamp': current_time,
-            'recvTimestamp': current_time,
-            
-            # GelSight specific data
-            'tactile_image': empty_image,
-            'image_shape': empty_image.shape,
-            
-            # Original format for backward compatibility
-            'timestamp': current_time,
+            'timestamp': self.logs["timestamp_utc"],
             'device_name': self.device_name,
             'frame_index': self._frame_count,
             'image': empty_image,
@@ -391,12 +459,14 @@ class GelSightSensor:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Simple GelSight tactile sensor test.",
+        description="GelSight tactile sensor test and streaming utility.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python gelsight.py                                    # Test with default settings
+  python gelsight.py                                    # Test with default settings (5 seconds)
   python gelsight.py --device "GelSight Mini" --duration 10  # Test specific device for 10 seconds
+  python gelsight.py --stream                           # Continuous streaming mode
+  python gelsight.py --stream --device "GelSight Mini"  # Stream specific device
         """
     )
     
@@ -410,12 +480,20 @@ Examples:
         "--duration",
         type=float,
         default=5.0,
-        help="Test duration in seconds (default: 5.0)."
+        help="Test duration in seconds (default: 5.0). Ignored in stream mode."
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Enable continuous streaming mode (like fast_stream_device.py). Runs until manually stopped."
     )
     
     args = parser.parse_args()
     
-    simple_test(
-        device_name=args.device,
-        duration_s=args.duration
-    ) 
+    if args.stream:
+        stream_test(device_name=args.device)
+    else:
+        simple_test(
+            device_name=args.device,
+            duration_s=args.duration
+        ) 

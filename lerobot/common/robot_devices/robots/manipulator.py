@@ -242,64 +242,55 @@ class ManipulatorRobot:
         for name in self.tactile_sensors:
             sensor = self.tactile_sensors[name]
             
-            # 通过类名检测传感器类型
-            sensor_type = 'unknown'
-            if hasattr(sensor, 'config'):
-                config_class_name = sensor.config.__class__.__name__.lower()
-                if 'gelsight' in config_class_name:
-                    sensor_type = 'gelsight'
-                elif 'tac3d' in config_class_name:
-                    sensor_type = 'tac3d'
-                # 也检查是否有type属性
-                elif hasattr(sensor.config, 'type'):
-                    sensor_type = sensor.config.type
+            # 获取传感器类型
+            sensor_type = sensor.config.type if hasattr(sensor.config, 'type') else 'unknown'
             
             # 基本元数据 (所有传感器通用)
-            tactile_ft[f"observation.tactile.{name}.sensor_sn"] = {
+            tactile_ft[f"observation.tactile.{sensor_type}.{name}.sensor_sn"] = {
                 "dtype": "string",
                 "shape": (1,),
                 "names": None,
             }
-            tactile_ft[f"observation.tactile.{name}.frame_index"] = {
+            tactile_ft[f"observation.tactile.{sensor_type}.{name}.frame_index"] = {
                 "dtype": "int64", 
                 "shape": (1,),
                 "names": None,
             }
-            tactile_ft[f"observation.tactile.{name}.send_timestamp"] = {
+            tactile_ft[f"observation.tactile.{sensor_type}.{name}.send_timestamp"] = {
                 "dtype": "float64",
                 "shape": (1,),
                 "names": None,
             }
-            tactile_ft[f"observation.tactile.{name}.recv_timestamp"] = {
+            tactile_ft[f"observation.tactile.{sensor_type}.{name}.recv_timestamp"] = {
                 "dtype": "float64", 
                 "shape": (1,),
                 "names": None,
-                        }
+            }
             
             if sensor_type == 'tac3d':
                 # Tac3D传感器特有的三维数据阵列 (400个标志点，每个3维坐标)
-                tactile_ft[f"observation.tactile.{name}.positions_3d"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.positions_3d"] = {
                     "dtype": "float64",
                     "shape": (400, 3),
                     "names": ["marker_id", "coordinate"],
                 }
-                tactile_ft[f"observation.tactile.{name}.displacements_3d"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.displacements_3d"] = {
                     "dtype": "float64",
                     "shape": (400, 3), 
                     "names": ["marker_id", "coordinate"],
                 }
-                tactile_ft[f"observation.tactile.{name}.forces_3d"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.forces_3d"] = {
                     "dtype": "float64",
                     "shape": (400, 3),
                     "names": ["marker_id", "coordinate"],
                 }
                 # 合成力和力矩
-                tactile_ft[f"observation.tactile.{name}.resultant_force"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = {
                     "dtype": "float64",
                     "shape": (3,),
                     "names": ["x", "y", "z"],
                 }
-                tactile_ft[f"observation.tactile.{name}.resultant_moment"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = {
                     "dtype": "float64",
                     "shape": (3,),
                     "names": ["x", "y", "z"],
@@ -310,26 +301,26 @@ class ManipulatorRobot:
                 imgh = getattr(sensor.config, 'imgh', 240)
                 imgw = getattr(sensor.config, 'imgw', 320)
                 
-                tactile_ft[f"observation.tactile.{name}.tactile_image"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = {
                     "dtype": "uint8",
                     "shape": (imgh, imgw, 3),
                     "names": ["height", "width", "channel"],
                 }
                 # 可选：添加处理后的特征（如接触检测结果）
                 # 这些可以通过图像处理算法从tactile_image计算得出
-                # tactile_ft[f"observation.tactile.{name}.contact_map"] = {
+                # tactile_ft[f"observation.tactile.{sensor_type}.{name}.contact_map"] = {
                 #     "dtype": "float32",
                 #     "shape": (imgh, imgw),
                 #     "names": ["height", "width"],
                 # }
             else:
                 # 未知传感器类型，使用基本的力数据格式
-                tactile_ft[f"observation.tactile.{name}.resultant_force"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = {
                     "dtype": "float64",
                     "shape": (3,),
                     "names": ["x", "y", "z"],
                 }
-                tactile_ft[f"observation.tactile.{name}.resultant_moment"] = {
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = {
                     "dtype": "float64",
                     "shape": (3,),
                     "names": ["x", "y", "z"],
@@ -743,31 +734,31 @@ class ManipulatorRobot:
             sensor_type = getattr(sensor.config, 'type', 'unknown')
             
             # 基本元数据 (所有传感器通用)
-            obs_dict[f"observation.tactile.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
-            obs_dict[f"observation.tactile.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
-            obs_dict[f"observation.tactile.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
-            obs_dict[f"observation.tactile.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
             
             if sensor_type == 'tac3d':
                 # Tac3D传感器特有的三维数据
-                obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
-                obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
-                obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
-                obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
-                obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
             elif sensor_type == 'gelsight':
                 # GelSight传感器特有的图像数据
-                obs_dict[f"observation.tactile.{name}.tactile_image"] = tactile_data[f"{name}_tactile_image"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[f"{name}_tactile_image"]
             else:
                 # 未知传感器类型，添加基本的力数据
                 if f"{name}_resultant_force" in tactile_data:
-                    obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
                 if f"{name}_resultant_moment" in tactile_data:
-                    obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
 
         # 创建action字典
         action_dict = {"action": action}
-        
+
         return obs_dict, action_dict
 
     def capture_observation(self):
@@ -806,7 +797,7 @@ class ManipulatorRobot:
         for name in self.tactile_sensors:
             before_tactile_read_t = time.perf_counter()
             sensor = self.tactile_sensors[name]
-            sensor_type = getattr(sensor.config, 'type', 'unknown')
+            sensor_type = sensor.config.type if hasattr(sensor.config, 'type') else 'unknown'
             data = sensor.read()
             
             if data:
@@ -899,30 +890,30 @@ class ManipulatorRobot:
             obs_dict[f"observation.images.{name}"] = images[name]
         for name in self.tactile_sensors:
             sensor = self.tactile_sensors[name]
-            sensor_type = getattr(sensor.config, 'type', 'unknown')
+            sensor_type = sensor.config.type if hasattr(sensor.config, 'type') else 'unknown'
             
             # 基本元数据 (所有传感器通用)
-            obs_dict[f"observation.tactile.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
-            obs_dict[f"observation.tactile.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
-            obs_dict[f"observation.tactile.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
-            obs_dict[f"observation.tactile.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
             
             if sensor_type == 'tac3d':
                 # Tac3D传感器特有的三维数据
-                obs_dict[f"observation.tactile.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
-                obs_dict[f"observation.tactile.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
-                obs_dict[f"observation.tactile.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
-                obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
-                obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
             elif sensor_type == 'gelsight':
                 # GelSight传感器特有的图像数据
-                obs_dict[f"observation.tactile.{name}.tactile_image"] = tactile_data[f"{name}_tactile_image"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[f"{name}_tactile_image"]
             else:
                 # 未知传感器类型，添加基本的力数据
                 if f"{name}_resultant_force" in tactile_data:
-                    obs_dict[f"observation.tactile.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
                 if f"{name}_resultant_moment" in tactile_data:
-                    obs_dict[f"observation.tactile.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
         return obs_dict
 
     def send_action(self, action: torch.Tensor) -> torch.Tensor:
@@ -969,7 +960,13 @@ class ManipulatorRobot:
         pass
         # TODO(aliberts): move robot-specific logs logic here
 
-    def disconnect(self):
+    def disconnect(self, force=False):
+        """
+        Disconnect the robot and all its devices.
+        
+        Args:
+            force (bool): If True, perform aggressive cleanup even if normal disconnect fails.
+        """
         if not self.is_connected:
             raise RobotDeviceNotConnectedError(
                 "ManipulatorRobot is not connected. You need to run `robot.connect()` before disconnecting."
@@ -1007,19 +1004,47 @@ class ManipulatorRobot:
                 print(f"Tactile sensor {name} disconnected successfully.")
             except Exception as e:
                 print(f"Warning: Error disconnecting tactile sensor {name}: {e}")
-                # For GelSight sensors, try to force cleanup
-                try:
-                    sensor = self.tactile_sensors[name]
-                    if hasattr(sensor, '_device') and sensor._device is not None:
-                        if hasattr(sensor._device, 'release'):
-                            print(f"Force releasing {name} device...")
-                            sensor._device.release()
-                        sensor._device = None
-                    if hasattr(sensor, '_connected'):
-                        sensor._connected = False
-                    print(f"Force cleanup completed for {name}")
-                except Exception as force_error:
-                    print(f"Force cleanup failed for {name}: {force_error}")
+                
+                # 如果强制模式或正常断开失败，进行强制清理
+                if force or True:  # 始终尝试强制清理
+                    try:
+                        sensor = self.tactile_sensors[name]
+                        if hasattr(sensor, '_device') and sensor._device is not None:
+                            if hasattr(sensor._device, 'release'):
+                                print(f"Force releasing {name} device...")
+                                sensor._device.release()
+                            sensor._device = None
+                        if hasattr(sensor, '_connected'):
+                            sensor._connected = False
+                        print(f"Force cleanup completed for {name}")
+                    except Exception as force_error:
+                        print(f"Force cleanup failed for {name}: {force_error}")
+                        
+                        # 最后手段：杀死相关进程（仅在强制模式下）
+                        if force:
+                            try:
+                                import subprocess
+                                import os
+                                import signal
+                                print(f"尝试强制终止 {name} 相关进程...")
+                                
+                                # 查找传感器相关进程
+                                sensor_type = getattr(sensor.config, 'type', 'unknown')
+                                if sensor_type == 'gelsight':
+                                    # 终止ffmpeg进程
+                                    result = subprocess.run(['pgrep', '-f', 'ffmpeg.*video'], 
+                                                          capture_output=True, text=True)
+                                    if result.returncode == 0:
+                                        pids = result.stdout.strip().split('\n')
+                                        for pid in pids:
+                                            if pid.strip():
+                                                try:
+                                                    os.kill(int(pid.strip()), signal.SIGTERM)
+                                                    print(f"终止ffmpeg进程 {pid}")
+                                                except:
+                                                    pass
+                            except Exception as proc_error:
+                                print(f"强制终止进程失败: {proc_error}")
 
         self.is_connected = False
         print("ManipulatorRobot disconnected successfully.")
