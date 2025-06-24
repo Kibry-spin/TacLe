@@ -26,9 +26,13 @@ lossy compression artifacts since these images have been decoded from compressed
 save disk space. The compression factor applied has been tuned to not affect success rate.
 
 Tactile Sensor Support:
-- Tac3D sensors: Displays resultant forces, moments, 3D positions, and force distributions
-- GelSight sensors: Displays tactile images with RGB channels and intensity statistics
-- Common metadata: sensor serial numbers, timestamps, frame indices
+- Tac3D sensors: Displays resultant forces and moments (x, y, z components) from:
+  * observation.tactile.tac3d.{name}.resultant_force
+  * observation.tactile.tac3d.{name}.resultant_moment
+- GelSight sensors: Displays tactile images and statistics from:
+  * observation.tactile.gelsight.{name}.tactile_image (RGB image display)
+  * Automatically computed brightness and contrast metrics
+- New hierarchical structure: observation.tactile.{sensor_type}.{name}.{field} for better organization
 
 Examples:
 
@@ -189,74 +193,143 @@ def visualize_dataset(
             # display tactile sensor data
             for key in batch.keys():
                 if key.startswith("observation.tactile."):
-                    # 提取传感器名称 (e.g., "main_gripper", "left_gripper")
+                    # 解析新的数据结构：observation.tactile.{sensor_type}.{name}.{field}
                     parts = key.split(".")
-                    if len(parts) >= 4:
-                        sensor_name = parts[2]  # main_gripper, left_gripper, etc.
-                        data_type = parts[3]    # positions_3d, forces_3d, tactile_image, etc.
+                    if len(parts) >= 5:
+                        sensor_type = parts[2]  # "gelsight" 或 "tac3d"
+                        sensor_name = parts[3]  # "main_gripper0", "main_gripper1", etc.
+                        data_type = parts[4]    # "tactile_image", "resultant_force", etc.
                         
-                        if data_type == "resultant_force":
-                            # Tac3D传感器：显示xyz方向的合力分量
-                            force = batch[key][i].numpy()  # (3,)
-                            
-                            # 设置合理的力值范围（可根据实际传感器规格调整）
-                            min_force = -50.0  # 允许负值（拉力）
-                            max_force = 50.0   # 最大推力
-                            
-                            # 分别显示x、y、z方向的力分量
-                            for dim_idx, force_component in enumerate(force):
-                                axis_name = ['x', 'y', 'z'][dim_idx]
+                        if sensor_type == "tac3d":
+                            if data_type == "resultant_force":
+                                # Tac3D传感器：显示xyz方向的合力分量
+                                force = batch[key][i].numpy()  # (3,)
                                 
-                                # 限制显示范围避免异常值影响可视化
-                                force_clamped = np.clip(force_component, min_force, max_force)
+                                # 设置合理的力值范围（可根据实际传感器规格调整）
+                                min_force = -50.0  # 允许负值（拉力）
+                                max_force = 50.0   # 最大推力
                                 
-                                # 可选：添加原始值记录（用于调试）
-                                if abs(force_component) > max_force:
-                                    print(f"Warning: Force {axis_name} component {force_component:.2f} exceeds max range ±{max_force}")
+                                # 分别显示x、y、z方向的力分量
+                                for dim_idx, force_component in enumerate(force):
+                                    axis_name = ['x', 'y', 'z'][dim_idx]
+                                    
+                                    # 限制显示范围避免异常值影响可视化
+                                    force_clamped = np.clip(force_component, min_force, max_force)
+                                    
+                                    # 可选：添加原始值记录（用于调试）
+                                    if abs(force_component) > max_force:
+                                        print(f"Warning: Force {axis_name} component {force_component:.2f} exceeds max range ±{max_force}")
+                                    
+                                    rr.log(f"tactile/tac3d/{sensor_name}/force_{axis_name}", 
+                                          rr.Scalars(force_clamped.item()))
+                                    
+                            elif data_type == "resultant_moment":
+                                # Tac3D传感器：显示xyz方向的合力矩分量
+                                moment = batch[key][i].numpy()  # (3,)
                                 
-                                rr.log(f"tactile/Tac3D/{sensor_name}/force_{axis_name}", 
-                                      rr.Scalars(force_clamped.item()))
+                                # 设置合理的力矩值范围
+                                min_moment = -10.0  # 允许负值
+                                max_moment = 10.0   # 最大力矩
+                                
+                                # 分别显示x、y、z方向的力矩分量
+                                for dim_idx, moment_component in enumerate(moment):
+                                    axis_name = ['x', 'y', 'z'][dim_idx]
+                                    
+                                    # 限制显示范围避免异常值影响可视化
+                                    moment_clamped = np.clip(moment_component, min_moment, max_moment)
+                                    
+                                    # 可选：添加原始值记录（用于调试）
+                                    if abs(moment_component) > max_moment:
+                                        print(f"Warning: Moment {axis_name} component {moment_component:.2f} exceeds max range ±{max_moment}")
+                                    
+                                    rr.log(f"tactile/tac3d/{sensor_name}/moment_{axis_name}", 
+                                          rr.Scalars(moment_clamped.item()))
 
-                        elif data_type == "tactile_image":
-                            # GelSight传感器：显示触觉图像
-                            tactile_image = batch[key][i]  # (H, W, 3) 或 (3, H, W)
-                            
-                            # 检查图像数据格式并转换为正确格式
-                            if isinstance(tactile_image, torch.Tensor):
-                                if tactile_image.ndim == 3:
-                                    if tactile_image.shape[0] == 3:  # (3, H, W) - CHW格式
-                                        # 转换为HWC格式并转为numpy
-                                        if tactile_image.dtype == torch.float32:
-                                            # 浮点数图像，需要转换为uint8
-                                            tactile_image_np = to_hwc_uint8_numpy(tactile_image)
-                                        else:
-                                            # 已经是uint8，只需要转换维度顺序
-                                            tactile_image_np = tactile_image.permute(1, 2, 0).numpy()
-                                    else:  # (H, W, 3) - HWC格式
-                                        if tactile_image.dtype == torch.float32:
-                                            # 浮点数转uint8
-                                            tactile_image_np = (tactile_image * 255).type(torch.uint8).numpy()
-                                        else:
-                                            # 已经是uint8
-                                            tactile_image_np = tactile_image.numpy()
-                                else:
-                                    print(f"Warning: Unexpected tactile image dimensions: {tactile_image.shape}")
-                                    continue
-                            else:
-                                # 已经是numpy数组
-                                tactile_image_np = tactile_image
+                        elif sensor_type == "gelsight":
+                            if data_type == "tactile_image":
+                                # GelSight传感器：显示触觉图像
+                                tactile_image = batch[key][i]  # (H, W, 3) 或 (3, H, W)
                                 
-                            # 确保数据类型正确
-                            if tactile_image_np.dtype != np.uint8:
-                                if tactile_image_np.max() <= 1.0:
-                                    # 归一化的浮点数图像
-                                    tactile_image_np = (tactile_image_np * 255).astype(np.uint8)
+                                # 检查图像数据格式并转换为正确格式
+                                if isinstance(tactile_image, torch.Tensor):
+                                    if tactile_image.ndim == 3:
+                                        if tactile_image.shape[0] == 3:  # (3, H, W) - CHW格式
+                                            # 转换为HWC格式并转为numpy
+                                            if tactile_image.dtype == torch.float32:
+                                                # 浮点数图像，需要转换为uint8
+                                                tactile_image_np = to_hwc_uint8_numpy(tactile_image)
+                                            else:
+                                                # 已经是uint8，只需要转换维度顺序
+                                                tactile_image_np = tactile_image.permute(1, 2, 0).numpy()
+                                        else:  # (H, W, 3) - HWC格式
+                                            if tactile_image.dtype == torch.float32:
+                                                # 浮点数转uint8
+                                                tactile_image_np = (tactile_image * 255).type(torch.uint8).numpy()
+                                            else:
+                                                # 已经是uint8
+                                                tactile_image_np = tactile_image.numpy()
+                                    else:
+                                        print(f"Warning: Unexpected tactile image dimensions: {tactile_image.shape}")
+                                        continue
                                 else:
-                                    # 其他情况，直接转换
-                                    tactile_image_np = tactile_image_np.astype(np.uint8)
-                            
-                            # 记录触觉图像
-                            rr.log(f"tactile/GelSight/{sensor_name}/tactile_image", rr.Image(tactile_image_np))
+                                    # 已经是numpy数组
+                                    tactile_image_np = tactile_image
+                                    
+                                # 确保数据类型正确
+                                if tactile_image_np.dtype != np.uint8:
+                                    if tactile_image_np.max() <= 1.0:
+                                        # 归一化的浮点数图像
+                                        tactile_image_np = (tactile_image_np * 255).astype(np.uint8)
+                                    else:
+                                        # 其他情况，直接转换
+                                        tactile_image_np = tactile_image_np.astype(np.uint8)
+                                
+                                # 关键修复：GelSight使用BGR格式，需要转换为RGB
+                                if tactile_image_np.shape[-1] == 3:  # 确保是3通道图像
+                                    # 将BGR转换为RGB（GelSight设备使用FFmpeg的bgr24格式）
+                                    tactile_image_np = tactile_image_np[..., ::-1]  # BGR -> RGB
+                                
+                                # 记录触觉图像
+                                rr.log(f"tactile/gelsight/{sensor_name}/tactile_image", rr.Image(tactile_image_np))
+                                
+                                # 为GelSight图像添加统计信息（可选）
+                                if tactile_image_np.size > 0:
+                                    # 计算RGB通道的平均亮度
+                                    mean_brightness = np.mean(tactile_image_np)
+                                    rr.log(f"tactile/gelsight/{sensor_name}/mean_brightness", 
+                                          rr.Scalars(mean_brightness.item()))
+                                    
+                                    # 计算对比度（标准差）
+                                    contrast = np.std(tactile_image_np)
+                                    rr.log(f"tactile/gelsight/{sensor_name}/contrast", 
+                                          rr.Scalars(contrast.item()))
+                                          
+                            elif data_type in ["frame_index", "recv_timestamp", "send_timestamp"]:
+                                # GelSight传感器：显示元数据信息
+                                metadata_value = batch[key][i]
+                                if isinstance(metadata_value, torch.Tensor):
+                                    metadata_value = metadata_value.item()
+                                
+                                rr.log(f"tactile/gelsight/{sensor_name}/{data_type}", 
+                                      rr.Scalars(metadata_value))
+                                      
+                        # 显示其他传感器元数据（如sensor_sn等字符串类型数据）
+                        elif sensor_type in ["gelsight", "tac3d"] and data_type == "sensor_sn":
+                            # 传感器序列号等字符串数据，记录为文本
+                            if key in batch:
+                                sensor_sn = batch[key][i]
+                                if isinstance(sensor_sn, torch.Tensor):
+                                    # 如果是tensor，可能需要解码
+                                    try:
+                                        if sensor_sn.dtype == torch.int64:
+                                            sensor_sn = str(sensor_sn.item())
+                                        else:
+                                            sensor_sn = str(sensor_sn.numpy())
+                                    except:
+                                        sensor_sn = str(sensor_sn)
+                                        
+                                rr.log(f"tactile/{sensor_type}/{sensor_name}/sensor_info", 
+                                      rr.TextLog(f"Serial Number: {sensor_sn}"))
 
     if mode == "local" and save:
         # save .rrd locally

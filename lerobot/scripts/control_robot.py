@@ -63,7 +63,7 @@ python lerobot/scripts/control_robot.py \
 - Visualize dataset:
 ```bash
 python lerobot/scripts/visualize_dataset.py \
-    --repo-id $USER/test_gel_tac3d1 \
+    --repo-id $USER/test_tt \
     --episode-index 0
 ```
 
