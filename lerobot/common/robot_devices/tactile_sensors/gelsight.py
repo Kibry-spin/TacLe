@@ -25,6 +25,7 @@ import cv2
 import yaml
 from typing import Dict, Any, Optional
 from pathlib import Path
+import threading
 
 # Add the project root to Python path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
@@ -235,236 +236,192 @@ class GelSightSensor:
 
         self._device = None
         self._connected = False
-        self._frame_count = 0
+        
+        # --- Multithreading for non-blocking read ---
+        self._latest_data = None
+        self._data_lock = threading.Lock()
+        self._reader_thread = None
+        self._stop_event = threading.Event()
         self.logs = {}
 
     def connect(self):
-        """Connect to the GelSight sensor."""
+        """Connect to the GelSight sensor with optimized settings for minimal latency."""
         if self._connected:
             raise RobotDeviceAlreadyConnectedError(f"GelSightSensor({self.device_name}) is already connected.")
 
         try:
             # Try to import gs_sdk
             try:
-                from lerobot.common.robot_devices.tactile_sensors.gs_sdk.gs_device import FastCamera
+                from lerobot.common.robot_devices.tactile_sensors.gs_sdk.gs_sdk.gs_device import FastCamera
             except ImportError:
-                # Try relative import
-                sys.path.append(os.path.join(os.path.dirname(__file__), 'gs_sdk'))
-                from gs_sdk.gs_device import FastCamera
-            
-            # Load config from file if provided
-            if self.config_path and os.path.exists(self.config_path):
-                with open(self.config_path, "r") as f:
-                    file_config = yaml.safe_load(f)
-                    # Override with file config
-                    self.device_name = file_config.get("device_name", self.device_name)
-                    self.imgh = file_config.get("imgh", self.imgh)
-                    self.imgw = file_config.get("imgw", self.imgw)
-                    self.raw_imgh = file_config.get("raw_imgh", self.raw_imgh)
-                    self.raw_imgw = file_config.get("raw_imgw", self.raw_imgw)
-                    self.framerate = file_config.get("framerate", self.framerate)
+                from gs_sdk.gs_sdk.gs_device import FastCamera
 
-            # Create and connect the device
+            # Initialize and connect the camera
             self._device = FastCamera(
-                self.device_name, 
-                self.imgh, 
-                self.imgw, 
-                self.raw_imgh, 
-                self.raw_imgw, 
-                self.framerate
+                self.device_name,
+                self.imgh,
+                self.imgw,
+                self.raw_imgh,
+                self.raw_imgw,
+                self.framerate,
+                verbose=False,
             )
-            self._device.connect()
+            self._device.connect(verbose=False)
             self._connected = True
             
-            print(f"GelSight sensor '{self.device_name}' connected successfully")
+            # Start the background reader thread
+            self._stop_event.clear()
+            self._reader_thread = threading.Thread(target=self._background_reader, daemon=True)
+            self._reader_thread.start()
             
-        except ImportError as e:
-            raise ImportError(f"Failed to import gs_sdk. Make sure it's installed: {e}")
+            print(f"GelSightSensor({self.device_name}) connected successfully.")
+            # Initial read to populate latest_data quickly
+            time.sleep(1 / self.framerate * 5)  # Wait for a few frames to be sure
+
         except Exception as e:
-            raise ConnectionError(f"Failed to connect to GelSight sensor: {e}")
+            self._connected = False
+            raise ConnectionError(f"Failed to connect to GelSightSensor({self.device_name}): {e}") from e
 
-    def read(self) -> dict:
-        """Read tactile image data from the sensor."""
-        if not self._connected:
-            raise RobotDeviceNotConnectedError(f"GelSightSensor({self.device_name}) is not connected.")
-
-        start_time = time.perf_counter()
-
-        try:
-            # Get image from device
-            image = self._device.get_image()
-            
-            # Debug: Print image info for troubleshooting
-            if image is None:
-                # Try alternative method or return empty data
-                print(f"Warning: GelSight sensor returned None image (attempt {self._frame_count + 1})")
-                return self._create_empty_data()
-            
-            # Validate image data
-            if not isinstance(image, np.ndarray):
-                print(f"Warning: GelSight sensor returned non-numpy data: {type(image)}")
-                return self._create_empty_data()
-            
-            if image.size == 0:
-                print(f"Warning: GelSight sensor returned empty image array")
-                return self._create_empty_data()
-            
-            # Validate image shape
-            expected_shapes = [
-                (self.imgh, self.imgw, 3),      # Processed image
-                (self.raw_imgh, self.raw_imgw, 3),  # Raw image
-                (self.imgh, self.imgw),         # Grayscale processed
-                (self.raw_imgh, self.raw_imgw), # Grayscale raw
-            ]
-            
-            if image.shape not in expected_shapes:
-                print(f"Warning: Unexpected image shape: {image.shape}, expected one of {expected_shapes}")
-                # Try to reshape if possible
-                if image.size == self.imgh * self.imgw * 3:
-                    print(f"Attempting to reshape to ({self.imgh}, {self.imgw}, 3)")
-                    try:
-                        image = image.reshape(self.imgh, self.imgw, 3)
-                    except Exception as reshape_error:
-                        print(f"Reshape failed: {reshape_error}")
-                        return self._create_empty_data()
-                else:
-                    print(f"Cannot reshape: image size {image.size} doesn't match expected size {self.imgh * self.imgw * 3}")
-                    return self._create_empty_data()
-
-            # Ensure image is in correct format (HWC, uint8)
-            if len(image.shape) == 2:  # Grayscale
-                image = np.stack([image, image, image], axis=-1)  # Convert to RGB
-            
-            if image.dtype != np.uint8:
-                if image.dtype in [np.float32, np.float64]:
-                    # Assume normalized values [0,1] or [0,255]
-                    if image.max() <= 1.0:
-                        image = (image * 255).astype(np.uint8)
-                    else:
-                        image = np.clip(image, 0, 255).astype(np.uint8)
-                else:
-                    image = image.astype(np.uint8)
-
-            self._frame_count += 1
-
-            # Standard LeRobot timestamp logging (following OpenCV camera pattern)
-            self.logs["delta_timestamp_s"] = time.perf_counter() - start_time
-            self.logs["timestamp_utc"] = capture_timestamp_utc()
-
-            # Return LeRobot compatible data format (following tactile sensor patterns)
-            return {
-                # Use timestamp from logs for consistency with other sensors
-                'timestamp': self.logs["timestamp_utc"],
-                'device_name': self.device_name,
-                'frame_index': self._frame_count,
-                'image': image,
-                'sensor_config': {
-                    'imgh': self.imgh,
-                    'imgw': self.imgw,
-                    'framerate': self.framerate,
-                    'raw_imgh': self.raw_imgh,
-                    'raw_imgw': self.raw_imgw,
-                }
-            }
-            
-        except KeyboardInterrupt:
-            # Handle KeyboardInterrupt specifically to ensure proper cleanup
-            print(f"KeyboardInterrupt received while reading from GelSight sensor {self.device_name}")
-            # Force disconnect to release resources
+    def _background_reader(self):
+        """Continuously reads frames from the camera in a background thread."""
+        frame_index = 0
+        while not self._stop_event.is_set() and self._connected:
             try:
-                self.disconnect()
-            except:
-                pass
-            # Re-raise the KeyboardInterrupt to allow proper program termination
-            raise
-        except Exception as e:
-            print(f"Error reading from GelSight sensor: {e}")
-            return self._create_empty_data()
+                # `get_image` is the blocking call from the underlying SDK
+                image = self._device.get_image()
+                timestamp = time.time()
+                frame_index += 1
+                
+                if image is not None:
+                    # The SDK returns a BGR image by default from ffmpeg
+                    data = {
+                        "tactile_image": image,
+                        "timestamp": timestamp,
+                        "frame_index": frame_index,
+                        "device_name": self.device_name,
+                    }
+                    
+                    with self._data_lock:
+                        self._latest_data = data
+                else:
+                    # Reduce busy-waiting if no frame is available
+                    time.sleep(1 / (self.framerate * 2))
+            except Exception as e:
+                # If the device is disconnected externally, the thread should stop
+                print(f"Error in GelSight background reader thread: {e}. Stopping thread.")
+                break
+        print("GelSight background reader thread stopped.")
 
-    def _create_empty_data(self) -> dict:
-        """Create empty data structure when sensor read fails."""
-        empty_image = np.zeros((self.imgh, self.imgw, 3), dtype=np.uint8)
+    def read(self) -> Optional[Dict[str, Any]]:
+        """
+        Reads the latest available tactile data. This is now a non-blocking call.
+        It returns the 'tactile_image' field for compatibility with manipulator.py
+        """
+        if not self._connected:
+            print("Warning: Attempted to read from a disconnected GelSight sensor.")
+            return None
         
-        # Standard timestamp logging even for empty data
-        self.logs["timestamp_utc"] = capture_timestamp_utc()
+        with self._data_lock:
+            # Return a copy to prevent race conditions if the caller modifies the dict
+            latest_data_copy = self._latest_data.copy() if self._latest_data else None
+
+        if latest_data_copy is None:
+            # This might happen if read() is called before the first frame is captured
+            return self._create_empty_data()
+        
+        return latest_data_copy
+
+    def _create_empty_data(self, timestamp: float = None) -> dict:
+        """Helper to create a data dictionary with null values."""
+        if timestamp is None:
+            timestamp = time.time()
         
         return {
-            'timestamp': self.logs["timestamp_utc"],
-            'device_name': self.device_name,
-            'frame_index': self._frame_count,
-            'image': empty_image,
-            'sensor_config': {
-                'imgh': self.imgh,
-                'imgw': self.imgw,
-                'framerate': self.framerate,
-                'raw_imgh': self.raw_imgh,
-                'raw_imgw': self.raw_imgw,
-            }
+            "tactile_image": np.zeros((self.imgh, self.imgw, 3), dtype=np.uint8),
+            "timestamp": timestamp,
+            "frame_index": -1,
+            "device_name": self.device_name,
         }
 
     def async_read(self) -> dict:
-        """Asynchronously read tactile data from the sensor (same as read for GelSight)."""
+        """Alias for read() for compatibility."""
         return self.read()
 
     def is_connected(self) -> bool:
-        """Check if sensor is connected."""
-        return self._connected
+        """Check if the sensor is connected."""
+        return self._connected and self._reader_thread is not None and self._reader_thread.is_alive()
 
     def get_sensor_info(self) -> dict:
-        """Get sensor information."""
-        info = {
-            'device_name': self.device_name,
-            'is_connected': self._connected,
-            'imgh': self.imgh,
-            'imgw': self.imgw,
-            'raw_imgh': self.raw_imgh,
-            'raw_imgw': self.raw_imgw,
-            'framerate': self.framerate,
+        """
+        Get sensor information.
+        """
+        return {
+            "device_name": self.device_name,
+            "height": self.imgh,
+            "width": self.imgw,
+            "framerate": self.framerate,
+            "is_connected": self.is_connected(),
         }
-        
-        # Add dynamic information if connected
-        if self._connected:
-            info.update({
-                'frame_count': self._frame_count,
-            })
-        
-        return info
 
     def disconnect(self):
-        """Disconnect from the sensor."""
+        """Disconnects from the sensor and cleans up resources."""
         if not self._connected:
-            print(f"GelSightSensor({self.device_name}) is already disconnected.")
             return
 
-        try:
-            if self._device and hasattr(self._device, 'release'):
-                print(f"Releasing GelSight device {self.device_name}...")
-                self._device.release()
-                print(f"GelSight device {self.device_name} released successfully.")
-        except Exception as e:
-            print(f"Warning: Error during GelSight sensor disconnect: {e}")
-        finally:
-            self._device = None
-            self._connected = False
-            print(f"GelSightSensor({self.device_name}) disconnected.")
+        print(f"Disconnecting GelSightSensor({self.device_name})...")
+        
+        # Signal the background thread to stop
+        self._stop_event.set()
+        
+        # Wait for the thread to terminate
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=1.0) # 1-second timeout
+            if self._reader_thread.is_alive():
+                print(f"Warning: GelSight reader thread for {self.device_name} did not terminate in time.")
+            self._reader_thread = None
+
+        # Release the camera device
+        if self._device:
+            try:
+                # Use a timeout mechanism for release to avoid hangs
+                def release_with_timeout():
+                    try:
+                        self._device.release()
+                        print(f"GelSight device {self.device_name} released.")
+                    except Exception as e:
+                        print(f"Warning: Exception during GelSight device release: {e}")
+
+                release_thread = threading.Thread(target=release_with_timeout, daemon=True)
+                release_thread.start()
+                release_thread.join(timeout=2.0) # 2-second timeout for release
+
+                if release_thread.is_alive():
+                    print(f"Error: GelSight device {self.device_name} release timed out. The resource might not be freed correctly.")
+                
+            except Exception as e:
+                print(f"Error during GelSight disconnect: {e}")
+            finally:
+                self._device = None
+        
+        self._connected = False
+        print(f"GelSightSensor({self.device_name}) disconnected.")
 
     def calibrate(self):
         """
-        Calibrate the GelSight sensor.
-        
-        GelSight sensors typically don't require explicit calibration like force-based sensors.
-        This method is provided for interface consistency with other tactile sensors.
+        Run sensor calibration (if applicable).
         """
-        print(f"GelSight sensor {self.device_name} does not require calibration.")
-        pass
+        if not self._connected:
+            raise RobotDeviceNotConnectedError("Cannot calibrate a disconnected sensor.")
+        # TODO: Implement calibration logic if needed for GelSight
+        print("Calibration is not implemented for GelSightSensor in this version.")
 
     def __del__(self):
-        """Destructor to ensure resources are released."""
+        """Destructor to ensure cleanup."""
         try:
-            if getattr(self, "_connected", False):
+            if self._connected:
                 self.disconnect()
-        except:
-            pass
+        except Exception as e:
+            print(f"Error in GelSightSensor destructor: {e}")
 
 
 if __name__ == "__main__":

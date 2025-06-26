@@ -119,7 +119,7 @@ pipeline:
 - name: NetworkTransport_SDK
   threads: 1
   config:
-    enabled: false
+    enabled: true
     remoteIP: 127.0.0.1
     remotePort: 9988
     sendData:

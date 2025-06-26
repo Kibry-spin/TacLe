@@ -22,6 +22,8 @@ import time
 import numpy as np
 from typing import Dict, Any, Optional
 from pathlib import Path
+import socket
+import subprocess
 
 # Add the project root to Python path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
@@ -138,6 +140,71 @@ class Tac3DSensor:
         if self._connected:
             raise RobotDeviceAlreadyConnectedError(f"Tac3DSensor(port={self.port}) is already connected.")
 
+        # ✅ 检查端口是否被占用
+        def is_port_in_use(port):
+            """检查端口是否被占用"""
+            try:
+                result = subprocess.run(['netstat', '-tulpn'], capture_output=True, text=True)
+                return f":{port}" in result.stdout
+            except Exception:
+                # 备用检查方法
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    try:
+                        s.bind(('0.0.0.0', port))
+                        return False
+                    except OSError:
+                        return True
+
+        def kill_port_process(port):
+            """杀死占用指定端口的进程"""
+            try:
+                result = subprocess.run(['netstat', '-tulpn'], capture_output=True, text=True)
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if f":{port}" in line and 'python' in line:
+                        # 提取进程ID
+                        parts = line.split()
+                        for part in parts:
+                            if 'python' in part and '/' in part:
+                                pid = part.split('/')[0]
+                                try:
+                                    subprocess.run(['kill', '-9', pid], check=True)
+                                    print(f"Killed process {pid} occupying port {port}")
+                                    return True
+                                except subprocess.CalledProcessError:
+                                    print(f"Failed to kill process {pid}")
+                                    return False
+            except Exception as e:
+                print(f"Error killing port process: {e}")
+            return False
+
+        # ✅ 处理端口占用问题
+        if is_port_in_use(self.port):
+            print(f"Warning: Port {self.port} is already in use")
+            print(f"Attempting to kill existing process on port {self.port}...")
+            
+            if kill_port_process(self.port):
+                # 等待端口释放
+                import time
+                time.sleep(1.0)
+                
+                # 再次检查
+                if is_port_in_use(self.port):
+                    print(f"Error: Port {self.port} is still in use after cleanup")
+                    raise ConnectionError(f"Cannot bind to port {self.port}: address already in use")
+                else:
+                    print(f"Port {self.port} successfully freed")
+            else:
+                print(f"Could not free port {self.port}, trying alternative approach...")
+                # 尝试使用其他端口
+                for alt_port in [9989, 9990, 9991, 9992]:
+                    if not is_port_in_use(alt_port):
+                        print(f"Using alternative port {alt_port}")
+                        self.port = alt_port
+                        break
+                else:
+                    raise ConnectionError(f"No available ports found for TAC3D sensor")
+
         try:
             from lerobot.common.robot_devices.tactile_sensors.TAC3D.PyTac3D import Sensor
         except ImportError:
@@ -151,21 +218,55 @@ class Tac3DSensor:
                 sys.path.append(os.path.join(current_dir, 'TAC3D'))
                 from PyTac3D import Sensor
         
-        # Create sensor with callback to store latest frame
-        self._sensor = Sensor(
-            recvCallback=self._frame_callback,
-            port=self.port,
-            maxQSize=5
-        )
-        
-        # Wait for sensor to be ready
-        print(f"Waiting for Tac3D sensor on port {self.port}...")
-        self._sensor.waitForFrame()
-        self._connected = True
-        
-        # Auto-calibrate if enabled
-        if self.auto_calibrate:
-            self.calibrate()
+        # ✅ 重试机制
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                print(f"Attempt {attempt + 1}/{max_retries}: Connecting to TAC3D sensor on port {self.port}...")
+                
+                # Create sensor with callback to store latest frame
+                self._sensor = Sensor(
+                    recvCallback=self._frame_callback,
+                    port=self.port,
+                    maxQSize=5
+                )
+                
+                # Wait for sensor to be ready
+                print(f"Waiting for Tac3D sensor on port {self.port}...")
+                self._sensor.waitForFrame()
+                self._connected = True
+                
+                print(f"Successfully connected to TAC3D sensor on port {self.port}")
+                
+                # Auto-calibrate if enabled
+                if self.auto_calibrate:
+                    self.calibrate()
+                
+                return  # 成功连接，退出
+                
+            except Exception as e:
+                print(f"Connection attempt {attempt + 1} failed: {e}")
+                
+                # 清理失败的连接
+                if hasattr(self, '_sensor') and self._sensor:
+                    try:
+                        if hasattr(self._sensor, '_UDP') and hasattr(self._sensor._UDP, 'close'):
+                            self._sensor._UDP.close()
+                    except:
+                        pass
+                    self._sensor = None
+                
+                if attempt < max_retries - 1:
+                    # 不是最后一次尝试，等待后重试
+                    import time
+                    time.sleep(2.0)
+                    
+                    # 尝试清理端口
+                    kill_port_process(self.port)
+                    time.sleep(1.0)
+                else:
+                    # 最后一次尝试失败，抛出异常
+                    raise ConnectionError(f"Failed to connect to TAC3D sensor after {max_retries} attempts: {e}")
 
     def _frame_callback(self, frame: Dict[str, Any], param: Any = None):
         """Callback to store the latest frame."""
@@ -190,14 +291,14 @@ class Tac3DSensor:
 
         # Return standardized data format
         return {
-            'timestamp': frame.get('recvTimestamp', time.time()),
-            'sensor_sn': frame.get('SN', 'unknown'),
-            'frame_index': frame.get('index', 0),
-            'positions_3d': frame.get('3D_Positions'),
-            'displacements_3d': frame.get('3D_Displacements'), 
-            'forces_3d': frame.get('3D_Forces'),
-            'resultant_force': frame.get('3D_ResultantForce'),
-            'resultant_moment': frame.get('3D_ResultantMoment'),
+            'recvTimestamp': frame.get('recvTimestamp', time.time()),
+            'SN': frame.get('SN', 'unknown'),
+            'index': frame.get('index', 0),
+            '3D_Positions': frame.get('3D_Positions'),
+            '3D_Displacements': frame.get('3D_Displacements'), 
+            '3D_Forces': frame.get('3D_Forces'),
+            '3D_ResultantForce': frame.get('3D_ResultantForce'),
+            '3D_ResultantMoment': frame.get('3D_ResultantMoment'),
             'raw_frame': frame
         }
 
@@ -263,13 +364,34 @@ class Tac3DSensor:
     def disconnect(self):
         """Disconnect from the sensor."""
         if not self._connected:
-            raise RobotDeviceNotConnectedError(f"Tac3DSensor(port={self.port}) is not connected.")
+            print(f"Tac3DSensor(port={self.port}) is already disconnected.")
+            return
 
-        if self._sensor and hasattr(self._sensor, '_UDP') and hasattr(self._sensor._UDP, 'close'):
-            self._sensor._UDP.close()
-        
-        self._sensor = None
-        self._connected = False
+        try:
+            # ✅ 仅释放UDP连接，不发送quit signal
+            if self._sensor:
+                # 关闭UDP连接
+                try:
+                    if hasattr(self._sensor, '_UDP'):
+                        if hasattr(self._sensor._UDP, 'close'):
+                            self._sensor._UDP.close()
+                        elif hasattr(self._sensor._UDP, 'sockUDP'):
+                            self._sensor._UDP.sockUDP.close()
+                        print(f"UDP connection on port {self.port} closed")
+                except Exception as e:
+                    print(f"Warning: Error closing UDP connection: {e}")
+                
+                self._sensor = None
+            
+            self._connected = False
+            self._latest_frame = None
+            print(f"Tac3DSensor(port={self.port}) disconnected successfully.")
+            
+        except Exception as e:
+            print(f"Warning: Error during TAC3D sensor disconnect: {e}")
+            # 强制清理
+            self._sensor = None
+            self._connected = False
 
     def __del__(self):
         if getattr(self, "_connected", False):

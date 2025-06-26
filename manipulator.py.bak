@@ -25,7 +25,6 @@ import warnings
 import signal
 import atexit
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import torch
@@ -562,227 +561,6 @@ class ManipulatorRobot:
             self.follower_arms[name].write("Maximum_Acceleration", 254)
             self.follower_arms[name].write("Acceleration", 254)
 
-    def _get_tactile_observation(self) -> dict[str, torch.Tensor | str]:
-        """
-        Reads data from all tactile sensors in parallel using multithreading and processes it.
-        This ensures better data synchronization when using multiple sensors.
-        """
-        # Stage 1: Parallel read data from all tactile sensors
-        tactile_data_raw = {}
-        before_tactile_read_t = time.perf_counter()
-        # Use max_workers=len(self.tactile_sensors) to read from all sensors concurrently.
-        # Fallback to 1 worker if no sensors are present to avoid errors.
-        with ThreadPoolExecutor(max_workers=len(self.tactile_sensors) or 1) as executor:
-            future_to_name = {executor.submit(sensor.read): name for name, sensor in self.tactile_sensors.items()}
-            for future in as_completed(future_to_name):
-                name = future_to_name[future]
-                try:
-                    tactile_data_raw[name] = future.result()
-                except Exception as e:
-                    print(f"Warning: Error reading from tactile sensor {name}: {e}")
-                    tactile_data_raw[name] = None
-        self.logs["read_all_tactile_parallel_dt_s"] = time.perf_counter() - before_tactile_read_t
-
-        # Stage 2: Process raw data into a temporary flat dictionary `tactile_data`
-        tactile_data = {}
-        for name, data in tactile_data_raw.items():
-            sensor = self.tactile_sensors[name]
-            sensor_type = getattr(sensor.config, "type", "unknown")
-
-            if data:
-                if sensor_type == "tac3d":
-                    # TAC3D传感器：使用tac3d.py返回的标准化字段名
-                    tactile_data[f"{name}_sensor_sn"] = data.get("sensor_sn", "")
-                    tactile_data[f"{name}_frame_index"] = torch.tensor(
-                        [data.get("frame_index", 0)], dtype=torch.int64
-                    )
-                    tactile_data[f"{name}_send_timestamp"] = torch.tensor(
-                        [data.get("timestamp", 0.0)], dtype=torch.float64
-                    )
-                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor(
-                        [data.get("timestamp", 0.0)], dtype=torch.float64
-                    )
-                elif sensor_type == "gelsight":
-                    # 🚀 GelSight传感器：优化的数据处理 - 移除昂贵的类型检查
-                    tactile_data[f"{name}_sensor_sn"] = data.get("device_name", "")
-                    tactile_data[f"{name}_frame_index"] = torch.tensor(
-                        [data.get("frame_index", 0)], dtype=torch.int64
-                    )
-                    # 🚀 关键优化：gelsight.py 现在直接返回 float 时间戳，无需转换
-                    gelsight_timestamp = data.get("timestamp", time.time())
-                    tactile_data[f"{name}_send_timestamp"] = torch.tensor(
-                        [gelsight_timestamp], dtype=torch.float64
-                    )
-                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor(
-                        [gelsight_timestamp], dtype=torch.float64
-                    )
-                else:
-                    # 未知传感器类型：使用通用字段
-                    tactile_data[f"{name}_sensor_sn"] = data.get("sensor_id", data.get("device_name", ""))
-                    tactile_data[f"{name}_frame_index"] = torch.tensor(
-                        [data.get("frame_index", data.get("index", 0))], dtype=torch.int64
-                    )
-                    # 尝试多种时间戳字段
-                    timestamp = data.get(
-                        "timestamp", data.get("recvTimestamp", data.get("sendTimestamp", time.time()))
-                    )
-                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
-                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
-
-                if sensor_type == "tac3d":
-                    # Tac3D传感器的三维数据阵列
-                    if "3D_Positions" in data and data["3D_Positions"] is not None:
-                        positions = data["3D_Positions"]
-                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(
-                            positions.astype(np.float64)
-                        )
-                    else:
-                        tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-
-                    if "3D_Displacements" in data and data["3D_Displacements"] is not None:
-                        displacements = data["3D_Displacements"]
-                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(
-                            displacements.astype(np.float64)
-                        )
-                    else:
-                        tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-
-                    if "3D_Forces" in data and data["3D_Forces"] is not None:
-                        forces_3d = data["3D_Forces"]
-                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
-                    else:
-                        tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-
-                    # 合成力和力矩
-                    if "resultant_force" in data and data["resultant_force"] is not None:
-                        force = data["resultant_force"]
-                        if isinstance(force, np.ndarray) and force.size >= 3:
-                            # Handle both (3,) and (1,3) shapes
-                            if force.ndim == 1:
-                                tactile_data[f"{name}_resultant_force"] = torch.tensor(
-                                    [force[0], force[1], force[2]], dtype=torch.float64
-                                )
-                            elif force.ndim == 2 and force.shape[0] >= 1:
-                                tactile_data[f"{name}_resultant_force"] = torch.tensor(
-                                    [force[0, 0], force[0, 1], force[0, 2]], dtype=torch.float64
-                                )
-                            else:
-                                tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                        else:
-                            tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    else:
-                        tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-
-                    if "resultant_moment" in data and data["resultant_moment"] is not None:
-                        moment = data["resultant_moment"]
-                        if isinstance(moment, np.ndarray) and moment.size >= 3:
-                            # Handle both (3,) and (1,3) shapes
-                            if moment.ndim == 1:
-                                tactile_data[f"{name}_resultant_moment"] = torch.tensor(
-                                    [moment[0], moment[1], moment[2]], dtype=torch.float64
-                                )
-                            elif moment.ndim == 2 and moment.shape[0] >= 1:
-                                tactile_data[f"{name}_resultant_moment"] = torch.tensor(
-                                    [moment[0, 0], moment[0, 1], moment[0, 2]], dtype=torch.float64
-                                )
-                            else:
-                                tactile_data[f"{name}_resultant_moment"] = torch.zeros(
-                                    3, dtype=torch.float64
-                                )
-                        else:
-                            tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-                    else:
-                        tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-
-                elif sensor_type == "gelsight":
-                    # GelSight传感器的图像数据
-                    if "tactile_image" in data and data["tactile_image"] is not None:
-                        image = data["tactile_image"]
-                        tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
-                    elif "image" in data and data["image"] is not None:
-                        # 兼容image字段
-                        image = data["image"]
-                        tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
-                else:
-                    # 未知传感器类型，使用基本的力数据格式
-                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-
-            else:
-                # 如果没有数据，根据传感器类型填充默认值
-                tactile_data[f"{name}_sensor_sn"] = ""
-                tactile_data[f"{name}_frame_index"] = torch.tensor([0], dtype=torch.int64)
-                tactile_data[f"{name}_send_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
-                tactile_data[f"{name}_recv_timestamp"] = torch.tensor([0.0], dtype=torch.float64)
-
-                if sensor_type == "tac3d":
-                    tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-                elif sensor_type == "gelsight":
-                    imgh = getattr(sensor.config, "imgh", 240)
-                    imgw = getattr(sensor.config, "imgw", 320)
-                    tactile_data[f"{name}_tactile_image"] = torch.zeros((imgh, imgw, 3), dtype=torch.uint8)
-                else:
-                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
-                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
-
-        # Stage 3: Populate the final observation dictionary with the correct hierarchical keys.
-        obs_dict = {}
-        for name in self.tactile_sensors:
-            sensor = self.tactile_sensors[name]
-            sensor_type = getattr(sensor.config, "type", "unknown")
-
-            # 基本元数据 (所有传感器通用)
-            obs_dict[f"observation.tactile.{sensor_type}.{name}.sensor_sn"] = tactile_data[
-                f"{name}_sensor_sn"
-            ]
-            obs_dict[f"observation.tactile.{sensor_type}.{name}.frame_index"] = tactile_data[
-                f"{name}_frame_index"
-            ]
-            obs_dict[f"observation.tactile.{sensor_type}.{name}.send_timestamp"] = tactile_data[
-                f"{name}_send_timestamp"
-            ]
-            obs_dict[f"observation.tactile.{sensor_type}.{name}.recv_timestamp"] = tactile_data[
-                f"{name}_recv_timestamp"
-            ]
-
-            if sensor_type == "tac3d":
-                # Tac3D传感器特有的三维数据
-                obs_dict[f"observation.tactile.{sensor_type}.{name}.positions_3d"] = tactile_data[
-                    f"{name}_positions_3d"
-                ]
-                obs_dict[f"observation.tactile.{sensor_type}.{name}.displacements_3d"] = tactile_data[
-                    f"{name}_displacements_3d"
-                ]
-                obs_dict[f"observation.tactile.{sensor_type}.{name}.forces_3d"] = tactile_data[
-                    f"{name}_forces_3d"
-                ]
-                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[
-                    f"{name}_resultant_force"
-                ]
-                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[
-                    f"{name}_resultant_moment"
-                ]
-            elif sensor_type == "gelsight":
-                # GelSight传感器特有的图像数据
-                obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[
-                    f"{name}_tactile_image"
-                ]
-            else:
-                # 未知传感器类型，添加基本的力数据
-                if f"{name}_resultant_force" in tactile_data:
-                    obs_dict[
-                        f"observation.tactile.{sensor_type}.{name}.resultant_force"
-                    ] = tactile_data[f"{name}_resultant_force"]
-                if f"{name}_resultant_moment" in tactile_data:
-                    obs_dict[
-                        f"observation.tactile.{sensor_type}.{name}.resultant_moment"
-                    ] = tactile_data[f"{name}_resultant_moment"]
-        return obs_dict
-
     def teleop_step(
         self, record_data=False
     ) -> None | tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
@@ -855,15 +633,100 @@ class ManipulatorRobot:
             self.logs[f"read_camera_{name}_dt_s"] = self.cameras[name].logs["delta_timestamp_s"]
             self.logs[f"async_read_camera_{name}_dt_s"] = time.perf_counter() - before_camread_t
 
-        # Read tactile sensor data in parallel
-        tactile_obs = self._get_tactile_observation()
+        # Read tactile sensor data
+        tactile_data = {}
+        for name in self.tactile_sensors:
+            before_tactile_read_t = time.perf_counter()
+            sensor = self.tactile_sensors[name]
+            sensor_type = getattr(sensor.config, 'type', 'unknown')
+            data = sensor.read()
+            
+            if data:
+                if sensor_type == 'tac3d':
+                    # TAC3D传感器：使用tac3d.py返回的标准化字段名
+                    tactile_data[f"{name}_sensor_sn"] = data.get('sensor_sn', '')
+                    tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('frame_index', 0)], dtype=torch.int64)
+                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([data.get('timestamp', 0.0)], dtype=torch.float64)
+                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([data.get('timestamp', 0.0)], dtype=torch.float64)
+                    
+                    # Tac3D传感器的三维数据阵列
+                    # 优先使用标准化字段名（tac3d.py返回的），然后尝试旧格式字段名
+                    if 'positions_3d' in data and data['positions_3d'] is not None:
+                        positions = data['positions_3d']
+                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                    elif '3D_Positions' in data and data['3D_Positions'] is not None:
+                        positions = data['3D_Positions']
+                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                    else:
+                        tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                    
+                    if 'displacements_3d' in data and data['displacements_3d'] is not None:
+                        displacements = data['displacements_3d']
+                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                    elif '3D_Displacements' in data and data['3D_Displacements'] is not None:
+                        displacements = data['3D_Displacements'] 
+                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                    else:
+                        tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                    
+                    if 'forces_3d' in data and data['forces_3d'] is not None:
+                        forces_3d = data['forces_3d']
+                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                    elif '3D_Forces' in data and data['3D_Forces'] is not None:
+                        forces_3d = data['3D_Forces']
+                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                    else:
+                        tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                elif sensor_type == 'gelsight':
+                    # 🚀 GelSight传感器：优化的数据处理 - 移除昂贵的类型检查
+                    tactile_data[f"{name}_sensor_sn"] = data.get('device_name', '')
+                    tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('frame_index', 0)], dtype=torch.int64)
+                    # 🚀 关键优化：gelsight.py 现在直接返回 float 时间戳，无需转换
+                    gelsight_timestamp = data.get('timestamp', time.time())
+                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([gelsight_timestamp], dtype=torch.float64)
+                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([gelsight_timestamp], dtype=torch.float64)
+                else:
+                    # 未知传感器类型：使用通用字段
+                    tactile_data[f"{name}_sensor_sn"] = data.get('sensor_id', data.get('device_name', ''))
+                    tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('frame_index', data.get('index', 0))], dtype=torch.int64)
+                    # 尝试多种时间戳字段
+                    timestamp = data.get('timestamp', data.get('recvTimestamp', data.get('sendTimestamp', time.time())))
+                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
+                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
+            
+            self.logs[f"read_tactile_{name}_dt_s"] = time.perf_counter() - before_tactile_read_t
 
         # Populate output dictionaries and format to pytorch
         obs_dict = {}
         obs_dict["observation.state"] = state
         for name in self.cameras:
             obs_dict[f"observation.images.{name}"] = images[name]
-        obs_dict.update(tactile_obs)
+        for name in self.tactile_sensors:
+            sensor = self.tactile_sensors[name]
+            sensor_type = getattr(sensor.config, 'type', 'unknown')
+            
+            # 基本元数据 (所有传感器通用)
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
+            
+            if sensor_type == 'tac3d':
+                # Tac3D传感器特有的三维数据
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+            elif sensor_type == 'gelsight':
+                # GelSight传感器特有的图像数据
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[f"{name}_tactile_image"]
+            else:
+                # 未知传感器类型，添加基本的力数据
+                if f"{name}_resultant_force" in tactile_data:
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                if f"{name}_resultant_moment" in tactile_data:
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
 
         # 创建action字典
         action_dict = {"action": action}
@@ -901,15 +764,100 @@ class ManipulatorRobot:
             self.logs[f"read_camera_{name}_dt_s"] = self.cameras[name].logs["delta_timestamp_s"]
             self.logs[f"async_read_camera_{name}_dt_s"] = time.perf_counter() - before_camread_t
 
-        # Read tactile sensor data in parallel
-        tactile_obs = self._get_tactile_observation()
+        # Read tactile sensor data
+        tactile_data = {}
+        for name in self.tactile_sensors:
+            before_tactile_read_t = time.perf_counter()
+            sensor = self.tactile_sensors[name]
+            sensor_type = sensor.config.type if hasattr(sensor.config, 'type') else 'unknown'
+            data = sensor.read()
+            
+            if data:
+                if sensor_type == 'tac3d':
+                    # TAC3D传感器：使用tac3d.py返回的标准化字段名
+                    tactile_data[f"{name}_sensor_sn"] = data.get('sensor_sn', '')
+                    tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('frame_index', 0)], dtype=torch.int64)
+                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([data.get('timestamp', 0.0)], dtype=torch.float64)
+                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([data.get('timestamp', 0.0)], dtype=torch.float64)
+                    
+                    # Tac3D传感器的三维数据阵列
+                    # 优先使用标准化字段名（tac3d.py返回的），然后尝试旧格式字段名
+                    if 'positions_3d' in data and data['positions_3d'] is not None:
+                        positions = data['positions_3d']
+                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                    elif '3D_Positions' in data and data['3D_Positions'] is not None:
+                        positions = data['3D_Positions']
+                        tactile_data[f"{name}_positions_3d"] = torch.from_numpy(positions.astype(np.float64))
+                    else:
+                        tactile_data[f"{name}_positions_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                    
+                    if 'displacements_3d' in data and data['displacements_3d'] is not None:
+                        displacements = data['displacements_3d']
+                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                    elif '3D_Displacements' in data and data['3D_Displacements'] is not None:
+                        displacements = data['3D_Displacements'] 
+                        tactile_data[f"{name}_displacements_3d"] = torch.from_numpy(displacements.astype(np.float64))
+                    else:
+                        tactile_data[f"{name}_displacements_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                    
+                    if 'forces_3d' in data and data['forces_3d'] is not None:
+                        forces_3d = data['forces_3d']
+                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                    elif '3D_Forces' in data and data['3D_Forces'] is not None:
+                        forces_3d = data['3D_Forces']
+                        tactile_data[f"{name}_forces_3d"] = torch.from_numpy(forces_3d.astype(np.float64))
+                    else:
+                        tactile_data[f"{name}_forces_3d"] = torch.zeros((400, 3), dtype=torch.float64)
+                elif sensor_type == 'gelsight':
+                    # 🚀 GelSight传感器：优化的数据处理 - 移除昂贵的类型检查
+                    tactile_data[f"{name}_sensor_sn"] = data.get('device_name', '')
+                    tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('frame_index', 0)], dtype=torch.int64)
+                    # 🚀 关键优化：gelsight.py 现在直接返回 float 时间戳，无需转换
+                    gelsight_timestamp = data.get('timestamp', time.time())
+                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([gelsight_timestamp], dtype=torch.float64)
+                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([gelsight_timestamp], dtype=torch.float64)
+                else:
+                    # 未知传感器类型：使用通用字段
+                    tactile_data[f"{name}_sensor_sn"] = data.get('sensor_id', data.get('device_name', ''))
+                    tactile_data[f"{name}_frame_index"] = torch.tensor([data.get('frame_index', data.get('index', 0))], dtype=torch.int64)
+                    # 尝试多种时间戳字段
+                    timestamp = data.get('timestamp', data.get('recvTimestamp', data.get('sendTimestamp', time.time())))
+                    tactile_data[f"{name}_send_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
+                    tactile_data[f"{name}_recv_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
+            
+            self.logs[f"read_tactile_{name}_dt_s"] = time.perf_counter() - before_tactile_read_t
 
         # Populate output dictionaries and format to pytorch
         obs_dict = {}
         obs_dict["observation.state"] = state
         for name in self.cameras:
             obs_dict[f"observation.images.{name}"] = images[name]
-        obs_dict.update(tactile_obs)
+        for name in self.tactile_sensors:
+            sensor = self.tactile_sensors[name]
+            sensor_type = sensor.config.type if hasattr(sensor.config, 'type') else 'unknown'
+            
+            # 基本元数据 (所有传感器通用)
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.sensor_sn"] = tactile_data[f"{name}_sensor_sn"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.frame_index"] = tactile_data[f"{name}_frame_index"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.send_timestamp"] = tactile_data[f"{name}_send_timestamp"]
+            obs_dict[f"observation.tactile.{sensor_type}.{name}.recv_timestamp"] = tactile_data[f"{name}_recv_timestamp"]
+            
+            if sensor_type == 'tac3d':
+                # Tac3D传感器特有的三维数据
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.positions_3d"] = tactile_data[f"{name}_positions_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.displacements_3d"] = tactile_data[f"{name}_displacements_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.forces_3d"] = tactile_data[f"{name}_forces_3d"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
+            elif sensor_type == 'gelsight':
+                # GelSight传感器特有的图像数据
+                obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[f"{name}_tactile_image"]
+            else:
+                # 未知传感器类型，添加基本的力数据
+                if f"{name}_resultant_force" in tactile_data:
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = tactile_data[f"{name}_resultant_force"]
+                if f"{name}_resultant_moment" in tactile_data:
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.resultant_moment"] = tactile_data[f"{name}_resultant_moment"]
         return obs_dict
 
     def send_action(self, action: torch.Tensor) -> torch.Tensor:

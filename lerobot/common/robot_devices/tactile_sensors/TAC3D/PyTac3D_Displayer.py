@@ -79,7 +79,8 @@ class Tac3D_Displayer:
             L = frame.get('3D_Positions')
             D = frame.get('3D_Displacements')
             F = frame.get('3D_Forces')
-
+            
+            print(f"L: {L}, D: {D}, F: {F}")
             self._plotter.at(0).clear()
             self._plotter.at(0).add(self._box, self._axs)
             self._plotter.at(1).clear()

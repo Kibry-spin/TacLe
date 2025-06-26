@@ -31,8 +31,8 @@ python lerobot/scripts/control_robot.py \
 python lerobot/scripts/control_robot.py \
     --robot.type=so100 \
     --robot.cameras='{}' \
-    --robot.tactile_sensors='{}' \
-    --control.type=teleoperate
+    --control.type=teleoperate \
+    --robot.tactile_sensors='{}' 
 
 # Add the cameras from the robot definition to visualize them:
 python lerobot/scripts/control_robot.py \
@@ -63,7 +63,7 @@ python lerobot/scripts/control_robot.py \
 - Visualize dataset:
 ```bash
 python lerobot/scripts/visualize_dataset.py \
-    --repo-id $USER/test_tt \
+    --repo-id $USER/test_two2 \
     --episode-index 0
 ```
 
@@ -81,15 +81,18 @@ python lerobot/scripts/control_robot.py replay \
 30 seconds of recording for each episode, and 10 seconds to reset the environment in between episodes:
 ```bash
 python lerobot/scripts/control_robot.py \
-    --robot.type=so100 \
+    --robot.type=so101 \
     --control.type=record \
     --control.fps 30 \
-    --control.repo_id=$USER/TEST-Tactile1 \
-    --control.num_episodes=5 \
+    --control.repo_id=$USER/test_two2 \
+    --control.num_episodes=1 \
     --control.warmup_time_s=2 \
     --control.episode_time_s=30 \
     --control.reset_time_s=10 \
-    --control.single_task="Just move the robot"
+    --control.single_task="Just move the robot" \
+    --control.play_sounds=false \
+    --control.push_to_hub=false \
+    --control.force_delete_existing=true
 ```
 
 - For remote controlled robots like LeKiwi, run this script on the robot edge device (e.g. RaspBerryPi):
@@ -140,6 +143,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
+from pathlib import Path
 from pprint import pformat
 
 import rerun as rr
@@ -263,6 +267,18 @@ def record(
     else:
         # Create empty dataset or load existing saved episodes
         sanity_check_dataset_name(cfg.repo_id, cfg.policy)
+        
+        # Handle force delete existing dataset directory
+        if cfg.force_delete_existing:
+            from lerobot.common.constants import HF_LEROBOT_HOME
+            import shutil
+            
+            dataset_root = Path(cfg.root) if cfg.root is not None else HF_LEROBOT_HOME / cfg.repo_id
+            if dataset_root.exists():
+                print(f"🗑️  强制删除已存在的数据集目录: {dataset_root}")
+                shutil.rmtree(dataset_root)
+                print("✅ 数据集目录删除完成")
+        
         dataset = LeRobotDataset.create(
             cfg.repo_id,
             cfg.fps,
@@ -309,11 +325,13 @@ def record(
             single_task=cfg.single_task,
         )
 
+        # 不再检测force_exit标志，让程序继续录制下一段
+            
         # Execute a few seconds without recording to give time to manually reset the environment
         # Current code logic doesn't allow to teleoperate during this time.
         # TODO(rcadene): add an option to enable teleoperation during reset
         # Skip reset for the last episode to be recorded OR if force exit is detected
-        if not events["stop_recording"] and not events.get("force_exit", False) and (
+        if not events["stop_recording"] and (
             (recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]
         ):
             log_say("Reset the environment", cfg.play_sounds)
@@ -406,10 +424,19 @@ def record(
         except:
             pass
 
+    # 尝试上传数据，但不要因为网络错误而中断程序
     if cfg.push_to_hub:
-        dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
-
+        try:
+            print("尝试上传数据到HuggingFace Hub...")
+            dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
+            print("数据上传成功")
+        except Exception as e:
+            print(f"警告: 数据上传失败，但不影响本地数据: {e}")
+            print("您可以稍后手动上传数据")
+    
     log_say("Exiting", cfg.play_sounds)
+    print("录制完成，正常退出程序")
+    
     return dataset
 
 

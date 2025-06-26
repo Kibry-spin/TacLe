@@ -87,6 +87,8 @@ class RecordControlConfig(ControlConfig):
     play_sounds: bool = True
     # Resume recording on an existing dataset.
     resume: bool = False
+    # Force delete existing dataset directory before creating a new one. Only works when resume=False.
+    force_delete_existing: bool = False
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.

@@ -150,10 +150,11 @@ def init_keyboard_listener():
     def on_press(key):
         try:
             if key == keyboard.Key.right:
-                print("Right arrow key pressed. Exiting current episode...")
+                print("右箭头键按下。退出当前录制段...")
                 events["exit_early"] = True
-                # 设置强制退出标志用于跳过当前episode的重置和校准
-                events["force_exit"] = True
+                # 不设置force_exit和stop_recording，只结束当前录制段
+                # events["force_exit"] = True
+                # events["stop_recording"] = True
             elif key == keyboard.Key.left:
                 print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
                 events["rerecord_episode"] = True
@@ -296,12 +297,7 @@ def control_loop(
             events["exit_early"] = False
             break
             
-        # 检查强制退出标志，确保能立即响应
-        if events.get("force_exit", False):
-            print("检测到强制退出信号，立即停止...")
-            # 在控制循环中立即重置，避免影响后续操作
-            events["force_exit"] = False
-            break
+        # 不再检查force_exit标志，让控制循环正常结束
 
 
 def reset_environment(robot, events, reset_time_s, fps):
@@ -309,11 +305,8 @@ def reset_environment(robot, events, reset_time_s, fps):
     if has_method(robot, "teleop_safety_stop"):
         robot.teleop_safety_stop()
 
-    # 检查是否强制退出，如果是则跳过校准
-    if events.get("force_exit", False):
-        print("检测到强制退出标志，跳过触觉传感器校准")
-    else:
-        # 重新校准触觉传感器（带超时保护）
+    # 始终执行校准，不再检查force_exit标志
+    # 重新校准触觉传感器（带超时保护）
         if hasattr(robot, 'tactile_sensors') and robot.tactile_sensors:
             print("正在重新校准触觉传感器...")
             
@@ -372,8 +365,20 @@ def stop_recording(robot, listener, display_data, force_cleanup=False):
     # 停止键盘监听器
     try:
         if not is_headless() and listener is not None:
+            # 确保键盘监听器完全停止
             listener.stop()
-            print("键盘监听器已停止")
+            # 等待监听器线程完全退出
+            if hasattr(listener, '_thread') and listener._thread:
+                try:
+                    listener._thread.join(timeout=2.0)
+                    if listener._thread.is_alive():
+                        print("警告: 键盘监听器线程未能在2秒内退出")
+                    else:
+                        print("键盘监听器已完全停止")
+                except Exception as join_err:
+                    print(f"等待键盘监听器线程退出时出错: {join_err}")
+            else:
+                print("键盘监听器已停止")
     except Exception as e:
         print(f"停止键盘监听器时出错: {e}")
         
