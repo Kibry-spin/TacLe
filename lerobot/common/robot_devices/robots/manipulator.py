@@ -592,15 +592,15 @@ class ManipulatorRobot:
             if data:
                 if sensor_type == "tac3d":
                     # TAC3D传感器：使用tac3d.py返回的标准化字段名
-                    tactile_data[f"{name}_sensor_sn"] = data.get("sensor_sn", "")
+                    tactile_data[f"{name}_sensor_sn"] = data.get("SN", "")
                     tactile_data[f"{name}_frame_index"] = torch.tensor(
-                        [data.get("frame_index", 0)], dtype=torch.int64
+                        [data.get("index", 0)], dtype=torch.int64
                     )
                     tactile_data[f"{name}_send_timestamp"] = torch.tensor(
-                        [data.get("timestamp", 0.0)], dtype=torch.float64
+                        [data.get("sendTimestamp", 0.0) if "sendTimestamp" in data else data.get("recvTimestamp", 0.0)], dtype=torch.float64
                     )
                     tactile_data[f"{name}_recv_timestamp"] = torch.tensor(
-                        [data.get("timestamp", 0.0)], dtype=torch.float64
+                        [data.get("recvTimestamp", 0.0)], dtype=torch.float64
                     )
                 elif sensor_type == "gelsight":
                     # 🚀 GelSight传感器：优化的数据处理 - 移除昂贵的类型检查

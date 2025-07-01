@@ -744,8 +744,8 @@ def main():
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=4,
-        help="Number of processes of Dataloader for loading the data.",
+        default=0,
+        help="Number of processes of Dataloader for loading the data. Set to 0 to avoid multiprocessing issues.",
     )
     parser.add_argument(
         "--mode",
@@ -799,7 +799,29 @@ def main():
     tolerance_s = kwargs.pop("tolerance_s")
 
     logging.info("Loading dataset")
-    dataset = LeRobotDataset(repo_id, root=root, tolerance_s=tolerance_s)
+    # Force use pyav backend to avoid torchcodec dependency
+    dataset = LeRobotDataset(repo_id, root=root, tolerance_s=tolerance_s, video_backend="pyav")
+    
+    # Check if the requested episode exists
+    episode_index = args.episode_index
+    available_episodes = dataset.num_episodes
+    total_frames = dataset.num_frames
+    print(f"📊 数据集信息:")
+    print(f"   - 总episode数量: {available_episodes} 个 (编号从 0 到 {available_episodes-1})")
+    print(f"   - 总frame数量: {total_frames} 个")
+    print(f"   - 平均每个episode: {total_frames//available_episodes} 个frames")
+    
+    if episode_index >= available_episodes:
+        print(f"\n❌ 错误：请求的 episode {episode_index} 不存在！")
+        print(f"   可用的episode编号范围: 0 到 {available_episodes-1}")
+        print(f"   请使用 --episode-index 参数指定正确的episode编号")
+        print(f"\n💡 示例命令:")
+        print(f"   python lerobot/scripts/visualize_dataset.py \\")
+        print(f"       --repo-id {repo_id} \\")
+        print(f"       --episode-index 0")
+        return
+    
+    print(f"✅ 正在可视化 episode {episode_index}")
 
     visualize_dataset(dataset, **vars(args))
 

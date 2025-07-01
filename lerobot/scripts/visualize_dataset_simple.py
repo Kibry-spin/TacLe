@@ -475,13 +475,13 @@ def visualize_dataset_simple(
                     if sensor_name not in tac3d_sensors:
                         tac3d_sensors[sensor_name] = {}
                     
-                    # Field name mapping
+                    # Field name mapping (数据集键名 -> Tac3D原始键名)
                     field_mapping = {
                         'positions_3d': '3D_Positions',
                         'displacements_3d': '3D_Displacements',
                         'forces_3d': '3D_Forces',
-                        'resultant_force': '3D_ResultantForce',
-                        'resultant_moment': '3D_ResultantMoment',
+                        'resultant_force': 'resultant_force',  # 使用tac3d.py中添加的标准化字段名
+                        'resultant_moment': 'resultant_moment',  # 使用tac3d.py中添加的标准化字段名
                         'sensor_sn': 'SN',
                         'frame_index': 'index',
                         'send_timestamp': 'sendTimestamp',
@@ -493,39 +493,56 @@ def visualize_dataset_simple(
                     tac3d_sensors[sensor_name][data_type_mapped] = current_data
                     
                     # Process force and moment data
-                    if data_type == 'resultant_force' or data_type_mapped == '3D_ResultantForce':
+                    if data_type == 'resultant_force' or data_type_mapped == 'resultant_force' or data_type_mapped == '3D_ResultantForce':
                         force = current_data
-                        if force.ndim == 2 and force.shape[0] == 1:
-                            force = force[0]
+                        if force is None:
+                            print(f"警告: 传感器 {sensor_name} 的合力数据为空")
+                            continue
+                            
+                        # 打印调试信息
+                        print(f"合力数据 ({sensor_name}): 类型={type(force)}, 形状={force.shape if hasattr(force, 'shape') else '无形状'}, 值={force}")
                         
-                        if force.size >= 3:
-                            # Log xyz force components
-                            for dim_idx, force_component in enumerate(force[:3]):
-                                axis_name = ['x', 'y', 'z'][dim_idx]
-                                rr.log(f"Tactile/Tac3D/{sensor_name}/Forces/Component/{axis_name}", 
-                                      rr.Scalars(force_component))
+                        # 处理不同形状的数据
+                        if isinstance(force, np.ndarray):
+                            if force.ndim == 2 and force.shape[0] == 1:
+                                force = force[0]  # 从(1,3)转为(3,)
                             
-                            # Log resultant force magnitude
-                            force_magnitude = np.linalg.norm(force[:3])
-                            rr.log(f"Tactile/Tac3D/{sensor_name}/Forces/Magnitude", 
-                                  rr.Scalars(force_magnitude))
+                            if force.size >= 3:
+                                # 记录xyz力分量
+                                for dim_idx, force_component in enumerate(force[:3]):
+                                    axis_name = ['x', 'y', 'z'][dim_idx]
+                                    rr.log(f"Tactile/Tac3D/{sensor_name}/Forces/Component/{axis_name}", 
+                                          rr.Scalars(force_component))
+                                
+                                # 记录合力大小
+                                force_magnitude = np.linalg.norm(force[:3])
+                                rr.log(f"Tactile/Tac3D/{sensor_name}/Forces/Magnitude", 
+                                      rr.Scalars(force_magnitude))
+                                
+                                # 打印调试信息
+                                print(f"合力分量 ({sensor_name}): X={force[0]:.4f}, Y={force[1]:.4f}, Z={force[2]:.4f}, 大小={force_magnitude:.4f}")
                             
-                    elif data_type == 'resultant_moment' or data_type_mapped == '3D_ResultantMoment':
+                    elif data_type == 'resultant_moment' or data_type_mapped == 'resultant_moment' or data_type_mapped == '3D_ResultantMoment':
                         moment = current_data
-                        if moment.ndim == 2 and moment.shape[0] == 1:
-                            moment = moment[0]
-                        
-                        if moment.size >= 3:
-                            # Log xyz moment components
-                            for dim_idx, moment_component in enumerate(moment[:3]):
-                                axis_name = ['x', 'y', 'z'][dim_idx]
-                                rr.log(f"Tactile/Tac3D/{sensor_name}/Moments/Component/{axis_name}", 
-                                      rr.Scalars(moment_component))
+                        if moment is None:
+                            continue
                             
-                            # Log resultant moment magnitude
-                            moment_magnitude = np.linalg.norm(moment[:3])
-                            rr.log(f"Tactile/Tac3D/{sensor_name}/Moments/Magnitude", 
-                                  rr.Scalars(moment_magnitude))
+                        # 处理不同形状的数据
+                        if isinstance(moment, np.ndarray):
+                            if moment.ndim == 2 and moment.shape[0] == 1:
+                                moment = moment[0]  # 从(1,3)转为(3,)
+                            
+                            if moment.size >= 3:
+                                # 记录xyz力矩分量
+                                for dim_idx, moment_component in enumerate(moment[:3]):
+                                    axis_name = ['x', 'y', 'z'][dim_idx]
+                                    rr.log(f"Tactile/Tac3D/{sensor_name}/Moments/Component/{axis_name}", 
+                                          rr.Scalars(moment_component))
+                                
+                                # 记录力矩大小
+                                moment_magnitude = np.linalg.norm(moment[:3])
+                                rr.log(f"Tactile/Tac3D/{sensor_name}/Moments/Magnitude", 
+                                      rr.Scalars(moment_magnitude))
 
                 elif sensor_type == "gelsight":
                     # GelSight sensor data processing
@@ -577,9 +594,16 @@ def visualize_dataset_simple(
         
         # Comprehensive 3D visualization for each Tac3D sensor
         for sensor_name, sensor_data in tac3d_sensors.items():
+            # 获取3D数据，支持多种可能的键名
             positions = sensor_data.get('3D_Positions')
             displacements = sensor_data.get('3D_Displacements')
             forces = sensor_data.get('3D_Forces')
+            
+            # 打印调试信息
+            print(f"\n传感器 {sensor_name} 数据键值:")
+            for key, value in sensor_data.items():
+                shape_info = f"形状={value.shape}" if hasattr(value, 'shape') else "无形状"
+                print(f"  - {key}: {type(value)}, {shape_info}")
             
             # Call enhanced Tac3D visualization function
             visualize_tac3d_points_and_vectors(
