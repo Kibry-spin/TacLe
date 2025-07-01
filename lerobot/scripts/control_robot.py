@@ -29,7 +29,7 @@ python lerobot/scripts/control_robot.py \
 - Unlimited teleoperation at highest frequency (~200 Hz is expected), to exit with CTRL+C:
 ```bash
 python lerobot/scripts/control_robot.py \
-    --robot.type=so100 \
+    --robot.type=so101 \
     --robot.cameras='{}' \
     --control.type=teleoperate \
     --robot.tactile_sensors='{}' 
@@ -63,7 +63,7 @@ python lerobot/scripts/control_robot.py \
 - Visualize dataset:
 ```bash
 python lerobot/scripts/visualize_dataset.py \
-    --repo-id $USER/test_two2 \
+    --repo-id $USER/show_two2 \
     --episode-index 0
 ```
 
@@ -84,15 +84,14 @@ python lerobot/scripts/control_robot.py \
     --robot.type=so101 \
     --control.type=record \
     --control.fps 30 \
-    --control.repo_id=$USER/test_two2 \
-    --control.num_episodes=1 \
+    --control.repo_id=$USER/Real_test2 \
+    --control.num_episodes=100 \
     --control.warmup_time_s=2 \
     --control.episode_time_s=30 \
     --control.reset_time_s=10 \
     --control.single_task="Just move the robot" \
     --control.play_sounds=false \
-    --control.push_to_hub=false \
-    --control.force_delete_existing=true
+    --control.push_to_hub=false
 ```
 
 - For remote controlled robots like LeKiwi, run this script on the robot edge device (e.g. RaspBerryPi):

@@ -857,6 +857,18 @@ class ManipulatorRobot:
 
         # Read tactile sensor data in parallel
         tactile_obs = self._get_tactile_observation()
+        
+        # 检查触觉传感器是否有关键错误
+        for name, sensor in self.tactile_sensors.items():
+            if hasattr(sensor, 'has_critical_error') and sensor.has_critical_error():
+                error_status = sensor.get_error_status() if hasattr(sensor, 'get_error_status') else {}
+                error_msg = error_status.get('error_message', 'Unknown critical error')
+                print(f"🚨 触觉传感器 {name} 发生关键错误: {error_msg}")
+                print(f"⚠️  强烈建议立即停止录制！按ESC键或Ctrl+C退出录制。")
+                
+                # 将错误信息添加到logs中，以便上层调用者知道
+                self.logs[f"tactile_sensor_{name}_critical_error"] = True
+                self.logs[f"tactile_sensor_{name}_error_message"] = error_msg
 
         # Populate output dictionaries and format to pytorch
         obs_dict = {}
@@ -903,6 +915,18 @@ class ManipulatorRobot:
 
         # Read tactile sensor data in parallel
         tactile_obs = self._get_tactile_observation()
+        
+        # 检查触觉传感器是否有关键错误
+        for name, sensor in self.tactile_sensors.items():
+            if hasattr(sensor, 'has_critical_error') and sensor.has_critical_error():
+                error_status = sensor.get_error_status() if hasattr(sensor, 'get_error_status') else {}
+                error_msg = error_status.get('error_message', 'Unknown critical error')
+                print(f"🚨 触觉传感器 {name} 发生关键错误: {error_msg}")
+                print(f"⚠️  强烈建议立即停止录制！按ESC键或Ctrl+C退出录制。")
+                
+                # 将错误信息添加到logs中，以便上层调用者知道
+                self.logs[f"tactile_sensor_{name}_critical_error"] = True
+                self.logs[f"tactile_sensor_{name}_error_message"] = error_msg
 
         # Populate output dictionaries and format to pytorch
         obs_dict = {}
@@ -952,6 +976,24 @@ class ManipulatorRobot:
 
         return torch.cat(action_sent)
 
+    def has_tactile_critical_errors(self) -> bool:
+        """检查是否有触觉传感器发生关键错误"""
+        for name, sensor in self.tactile_sensors.items():
+            if hasattr(sensor, 'has_critical_error') and sensor.has_critical_error():
+                return True
+        return False
+    
+    def get_tactile_error_summary(self) -> dict:
+        """获取触觉传感器错误摘要"""
+        errors = {}
+        for name, sensor in self.tactile_sensors.items():
+            if hasattr(sensor, 'has_critical_error') and sensor.has_critical_error():
+                if hasattr(sensor, 'get_error_status'):
+                    errors[name] = sensor.get_error_status()
+                else:
+                    errors[name] = {"has_error": True, "error_message": "Critical error detected"}
+        return errors
+
     def print_logs(self):
         pass
         # TODO(aliberts): move robot-specific logs logic here
@@ -995,52 +1037,55 @@ class ManipulatorRobot:
         # Disconnect tactile sensors with extra care
         for name in self.tactile_sensors:
             try:
-                print(f"Disconnecting tactile sensor {name}...")
+                print(f"正在断开触觉传感器 {name}...")
                 self.tactile_sensors[name].disconnect()
-                print(f"Tactile sensor {name} disconnected successfully.")
+                print(f"触觉传感器 {name} 已断开")
             except Exception as e:
                 print(f"Warning: Error disconnecting tactile sensor {name}: {e}")
                 
-                # 如果强制模式或正常断开失败，进行强制清理
-                if force or True:  # 始终尝试强制清理
-                    try:
-                        sensor = self.tactile_sensors[name]
-                        if hasattr(sensor, '_device') and sensor._device is not None:
-                            if hasattr(sensor._device, 'release'):
-                                print(f"Force releasing {name} device...")
-                                sensor._device.release()
-                            sensor._device = None
-                        if hasattr(sensor, '_connected'):
-                            sensor._connected = False
-                        print(f"Force cleanup completed for {name}")
-                    except Exception as force_error:
-                        print(f"Force cleanup failed for {name}: {force_error}")
+                # 进行强制清理
+                try:
+                    sensor = self.tactile_sensors[name]
+                    sensor_type = getattr(sensor.config, 'type', 'unknown')
+                    
+                    if sensor_type == 'gelsight':
+                        print(f"正在强制清理GelSight传感器 {name}...")
                         
-                        # 最后手段：杀死相关进程（仅在强制模式下）
-                        if force:
-                            try:
-                                import subprocess
-                                import os
-                                import signal
-                                print(f"尝试强制终止 {name} 相关进程...")
-                                
-                                # 查找传感器相关进程
-                                sensor_type = getattr(sensor.config, 'type', 'unknown')
-                                if sensor_type == 'gelsight':
-                                    # 终止ffmpeg进程
-                                    result = subprocess.run(['pgrep', '-f', 'ffmpeg.*video'], 
-                                                          capture_output=True, text=True)
-                                    if result.returncode == 0:
-                                        pids = result.stdout.strip().split('\n')
-                                        for pid in pids:
-                                            if pid.strip():
-                                                try:
-                                                    os.kill(int(pid.strip()), signal.SIGTERM)
-                                                    print(f"终止ffmpeg进程 {pid}")
-                                                except:
-                                                    pass
-                            except Exception as proc_error:
-                                print(f"强制终止进程失败: {proc_error}")
+                        # 强制终止FFmpeg进程
+                        if hasattr(sensor, '_device') and sensor._device:
+                            if hasattr(sensor._device, 'process') and sensor._device.process:
+                                try:
+                                    sensor._device.process.kill()
+                                    sensor._device.process.wait()
+                                    print(f"FFmpeg进程已强制终止 for {name}")
+                                except:
+                                    pass
+                        
+                        # 查找并终止相关的ffmpeg进程
+                        try:
+                            import subprocess
+                            result = subprocess.run(['pgrep', '-f', 'ffmpeg.*video'], 
+                                                  capture_output=True, text=True, timeout=2.0)
+                            if result.returncode == 0 and result.stdout.strip():
+                                pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                                for pid in pids:
+                                    try:
+                                        subprocess.run(['kill', '-9', pid], timeout=1.0)
+                                        print(f"强制终止ffmpeg进程 {pid}")
+                                    except:
+                                        pass
+                        except:
+                            pass
+                    
+                    # 清理传感器对象
+                    if hasattr(sensor, '_device'):
+                        sensor._device = None
+                    if hasattr(sensor, '_connected'):
+                        sensor._connected = False
+                    print(f"触觉传感器 {name} 强制清理完成")
+                    
+                except Exception as force_error:
+                    print(f"Force cleanup failed for {name}: {force_error}")
 
         self.is_connected = False
         print("ManipulatorRobot disconnected successfully.")

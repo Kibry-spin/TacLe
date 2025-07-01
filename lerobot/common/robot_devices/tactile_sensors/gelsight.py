@@ -242,6 +242,7 @@ class GelSightSensor:
         self._data_lock = threading.Lock()
         self._reader_thread = None
         self._stop_event = threading.Event()
+        self._has_critical_error = False  # 标记是否有关键错误
         self.logs = {}
 
     def connect(self):
@@ -285,6 +286,9 @@ class GelSightSensor:
     def _background_reader(self):
         """Continuously reads frames from the camera in a background thread."""
         frame_index = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 3  # 最多允许3次连续错误
+        
         while not self._stop_event.is_set() and self._connected:
             try:
                 # `get_image` is the blocking call from the underlying SDK
@@ -293,6 +297,9 @@ class GelSightSensor:
                 frame_index += 1
                 
                 if image is not None:
+                    # 重置错误计数器
+                    consecutive_errors = 0
+                    
                     # The SDK returns a BGR image by default from ffmpeg
                     data = {
                         "tactile_image": image,
@@ -306,10 +313,42 @@ class GelSightSensor:
                 else:
                     # Reduce busy-waiting if no frame is available
                     time.sleep(1 / (self.framerate * 2))
+                    
             except Exception as e:
-                # If the device is disconnected externally, the thread should stop
-                print(f"Error in GelSight background reader thread: {e}. Stopping thread.")
-                break
+                consecutive_errors += 1
+                error_msg = str(e)
+                
+                # 检查是否是严重的数据错误
+                is_critical_error = (
+                    "cannot reshape array" in error_msg or
+                    "size 0 into shape" in error_msg or
+                    "Broken pipe" in error_msg or
+                    "Connection reset" in error_msg
+                )
+                
+                if is_critical_error or consecutive_errors >= max_consecutive_errors:
+                    print(f"🚨 严重错误！GelSight传感器 {self.device_name} 出现关键错误:")
+                    print(f"   错误信息: {error_msg}")
+                    print(f"   连续错误次数: {consecutive_errors}")
+                    print(f"⚠️  建议立即停止当前录制任务!")
+                    
+                    # 标记传感器为故障状态
+                    with self._data_lock:
+                        self._latest_data = {
+                            "error": True,
+                            "error_message": error_msg,
+                            "timestamp": time.time(),
+                            "frame_index": frame_index,
+                            "device_name": self.device_name,
+                        }
+                    
+                    # 设置故障标志
+                    self._has_critical_error = True
+                    break
+                else:
+                    print(f"Warning: GelSight传感器 {self.device_name} 出现错误 ({consecutive_errors}/{max_consecutive_errors}): {error_msg}")
+                    time.sleep(0.1)  # 短暂等待后重试
+                    
         print("GelSight background reader thread stopped.")
 
     def read(self) -> Optional[Dict[str, Any]]:
@@ -350,6 +389,26 @@ class GelSightSensor:
     def is_connected(self) -> bool:
         """Check if the sensor is connected."""
         return self._connected and self._reader_thread is not None and self._reader_thread.is_alive()
+    
+    def has_critical_error(self) -> bool:
+        """检查传感器是否有关键错误"""
+        return getattr(self, '_has_critical_error', False)
+    
+    def get_error_status(self) -> dict:
+        """获取传感器错误状态"""
+        if not self.has_critical_error():
+            return {"has_error": False}
+        
+        with self._data_lock:
+            if self._latest_data and self._latest_data.get("error"):
+                return {
+                    "has_error": True,
+                    "error_message": self._latest_data.get("error_message", "Unknown error"),
+                    "timestamp": self._latest_data.get("timestamp", 0),
+                    "device_name": self.device_name
+                }
+        
+        return {"has_error": True, "error_message": "Critical error detected"}
 
     def get_sensor_info(self) -> dict:
         """
@@ -380,23 +439,55 @@ class GelSightSensor:
                 print(f"Warning: GelSight reader thread for {self.device_name} did not terminate in time.")
             self._reader_thread = None
 
-        # Release the camera device
+        # Release the camera device with improved cleanup
         if self._device:
             try:
-                # Use a timeout mechanism for release to avoid hangs
-                def release_with_timeout():
+                # 直接终止FFmpeg进程而不等待
+                if hasattr(self._device, 'process') and self._device.process:
+                    import signal
+                    import subprocess
+                    
+                    print(f"Terminating FFmpeg process for {self.device_name}...")
                     try:
-                        self._device.release()
-                        print(f"GelSight device {self.device_name} released.")
+                        # 首先尝试优雅地终止进程
+                        self._device.process.terminate()
+                        
+                        # 给进程一点时间来优雅地退出
+                        try:
+                            self._device.process.wait(timeout=1.0)
+                            print(f"FFmpeg process terminated gracefully for {self.device_name}")
+                        except subprocess.TimeoutExpired:
+                            # 如果优雅终止失败，强制杀死进程
+                            print(f"Force killing FFmpeg process for {self.device_name}...")
+                            self._device.process.kill()
+                            self._device.process.wait()  # 确保进程真正结束
+                            print(f"FFmpeg process killed for {self.device_name}")
+                            
                     except Exception as e:
-                        print(f"Warning: Exception during GelSight device release: {e}")
-
-                release_thread = threading.Thread(target=release_with_timeout, daemon=True)
-                release_thread.start()
-                release_thread.join(timeout=2.0) # 2-second timeout for release
-
-                if release_thread.is_alive():
-                    print(f"Error: GelSight device {self.device_name} release timed out. The resource might not be freed correctly.")
+                        print(f"Error terminating FFmpeg process: {e}")
+                        # 最后尝试：查找并杀死相关的FFmpeg进程
+                        try:
+                            result = subprocess.run(['pgrep', '-f', f'ffmpeg.*{self._device.device}'], 
+                                                  capture_output=True, text=True, timeout=2.0)
+                            if result.returncode == 0 and result.stdout.strip():
+                                pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                                for pid in pids:
+                                    try:
+                                        subprocess.run(['kill', '-9', pid], timeout=1.0)
+                                        print(f"Force killed FFmpeg process {pid}")
+                                    except:
+                                        pass
+                        except:
+                            pass
+                
+                # 关闭stdout（如果还打开着）
+                if hasattr(self._device, 'process') and self._device.process and self._device.process.stdout:
+                    try:
+                        self._device.process.stdout.close()
+                    except:
+                        pass
+                
+                print(f"GelSight device {self.device_name} cleaned up successfully.")
                 
             except Exception as e:
                 print(f"Error during GelSight disconnect: {e}")
@@ -418,10 +509,21 @@ class GelSightSensor:
     def __del__(self):
         """Destructor to ensure cleanup."""
         try:
-            if self._connected:
+            if getattr(self, '_connected', False):
                 self.disconnect()
         except Exception as e:
             print(f"Error in GelSightSensor destructor: {e}")
+            # 最后尝试强制清理
+            try:
+                if hasattr(self, '_device') and self._device:
+                    if hasattr(self._device, 'process') and self._device.process:
+                        try:
+                            self._device.process.kill()
+                            self._device.process.wait()
+                        except:
+                            pass
+            except:
+                pass
 
 
 if __name__ == "__main__":
