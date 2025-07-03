@@ -299,7 +299,7 @@ class Tac3DSensor:
             '3D_Forces': frame.get('3D_Forces'),
             '3D_ResultantForce': frame.get('3D_ResultantForce'),
             '3D_ResultantMoment': frame.get('3D_ResultantMoment'),
-            # 添加标准化的字段名称，与manipulator.py中的处理保持一致
+            # Standardized field names for compatibility
             'resultant_force': frame.get('3D_ResultantForce'),
             'resultant_moment': frame.get('3D_ResultantMoment'),
             'raw_frame': frame

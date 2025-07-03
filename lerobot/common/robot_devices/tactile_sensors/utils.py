@@ -20,6 +20,7 @@ from lerobot.common.robot_devices.tactile_sensors.configs import (
     TactileSensorConfig,
     Tac3DConfig,
     GelSightConfig,
+    DIGITConfig,
 )
 
 
@@ -112,6 +113,11 @@ def make_tactile_sensors_from_configs(
             
             tactile_sensors[key] = GelSightSensor(cfg)
             
+        elif cfg.type == "digit":
+            from lerobot.common.robot_devices.tactile_sensors.digit import DIGITSensor
+            
+            tactile_sensors[key] = DIGITSensor(cfg)
+            
         else:
             raise ValueError(f"The tactile sensor type '{cfg.type}' is not valid.")
 
@@ -140,6 +146,12 @@ def make_tactile_sensor(sensor_type: str, **kwargs) -> TactileSensor:
         
         config = GelSightConfig(**kwargs)
         return GelSightSensor(config)
+        
+    elif sensor_type == "digit":
+        from lerobot.common.robot_devices.tactile_sensors.digit import DIGITSensor
+        
+        config = DIGITConfig(**kwargs)
+        return DIGITSensor(config)
         
     else:
         raise ValueError(f"The tactile sensor type '{sensor_type}' is not valid.")
@@ -188,6 +200,17 @@ def standardize_tactile_data(
     
     elif sensor_type == "gelsight":
         # GelSight specific data mapping
+        if 'tactile_image' in raw_data:
+            standardized['tactile_image'] = raw_data['tactile_image']
+        if 'image' in raw_data:
+            standardized['image'] = raw_data['image']
+        if 'device_name' in raw_data:
+            standardized['device_name'] = raw_data['device_name']
+        if 'frame_index' in raw_data:
+            standardized['frame_index'] = raw_data['frame_index']
+            
+    elif sensor_type == "digit":
+        # DIGIT specific data mapping (similar to GelSight)
         if 'tactile_image' in raw_data:
             standardized['tactile_image'] = raw_data['tactile_image']
         if 'image' in raw_data:

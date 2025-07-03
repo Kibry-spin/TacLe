@@ -32,6 +32,7 @@ from lerobot.common.robot_devices.tactile_sensors.configs import (
     TactileSensorConfig,
     Tac3DConfig,
     GelSightConfig,
+    DIGITConfig,
 )
 
 
@@ -467,7 +468,7 @@ class So101RobotConfig(ManipulatorRobotConfig):
     leader_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
             "main": FeetechMotorsBusConfig(
-                port="/dev/ttyACM0",
+                port="/dev/ttyACM1",
                 motors={
                     # name: (index, model)
                     "shoulder_pan": [1, "sts3215"],
@@ -484,7 +485,7 @@ class So101RobotConfig(ManipulatorRobotConfig):
     follower_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
             "main": FeetechMotorsBusConfig(
-                port="/dev/ttyACM1",
+                port="/dev/ttyACM2",
                 motors={
                     # name: (index, model)
                     "shoulder_pan": [1, "sts3215"],
@@ -501,25 +502,21 @@ class So101RobotConfig(ManipulatorRobotConfig):
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {
             "hand": OpenCVCameraConfig(
-                camera_index=6,
+                camera_index=8,
                 fps=30,
                 width=640,
                 height=480,
             ),
-            "head": OpenCVCameraConfig(
-                camera_index=9,
+            "laptop": OpenCVCameraConfig(
+                camera_index=2,
                 fps=30,
                 width=640,
                 height=480,
-            )
+            ),
         }
     )
     tactile_sensors: dict[str, TactileSensorConfig] = field(
         default_factory=lambda: {
-            # "main_gripper": Tac3DConfig(
-            #     port=9988,
-            #     auto_calibrate=True,
-            # ),
             "main_gripper0": GelSightConfig(
                 device_name="GelSight Mini",
                 imgh=240,
@@ -531,6 +528,13 @@ class So101RobotConfig(ManipulatorRobotConfig):
                 port=9988,
                 auto_calibrate=True,
             ),
+            # DIGIT传感器配置示例
+            "gripper_digit": DIGITConfig(
+            device_name="D21186",  # 你的DIGIT序列号
+            imgh=240,
+            imgw=320,
+            framerate=60,
+    ),
         }
     )
     mock: bool = False
@@ -594,10 +598,6 @@ class So100RobotConfig(ManipulatorRobotConfig):
     # Tac3D sensor on gripper tip
     tactile_sensors: dict[str, TactileSensorConfig] = field(
         default_factory=lambda: {
-            # "main_gripper": Tac3DConfig(
-            #     port=9988,
-            #     auto_calibrate=True,
-            # ),
             "main_gripper0": GelSightConfig(
                 device_name="GelSight Mini",
                 imgh=240,
@@ -608,6 +608,15 @@ class So100RobotConfig(ManipulatorRobotConfig):
             "main_gripper1": Tac3DConfig(
                 port=9988,
                 auto_calibrate=True,
+            ),
+            # DIGIT传感器配置示例
+            "main_gripper_digit": DIGITConfig(
+                device_name="DIGIT",
+                imgh=240,
+                imgw=320,
+                raw_imgh=480,
+                raw_imgw=640,
+                framerate=60,
             ),
         }
     )

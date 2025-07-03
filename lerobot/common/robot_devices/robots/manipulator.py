@@ -285,7 +285,7 @@ class ManipulatorRobot:
                     "shape": (400, 3),
                     "names": ["marker_id", "coordinate"],
                 }
-                # 合成力和力矩
+                # 合成力和力矩 (3D向量)
                 tactile_ft[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = {
                     "dtype": "float64",
                     "shape": (3,),
@@ -296,6 +296,7 @@ class ManipulatorRobot:
                     "shape": (3,),
                     "names": ["x", "y", "z"],
                 }
+
             elif sensor_type == 'gelsight':
                 # GelSight传感器特有的图像数据
                 # 获取图像尺寸配置
@@ -307,13 +308,13 @@ class ManipulatorRobot:
                     "shape": (imgh, imgw, 3),
                     "names": ["height", "width", "channel"],
                 }
-                # 可选：添加处理后的特征（如接触检测结果）
-                # 这些可以通过图像处理算法从tactile_image计算得出
-                # tactile_ft[f"observation.tactile.{sensor_type}.{name}.contact_map"] = {
-                #     "dtype": "float32",
-                #     "shape": (imgh, imgw),
-                #     "names": ["height", "width"],
-                # }
+            elif sensor_type == 'digit':
+                # DIGIT传感器：只处理图像数据，移除力数据
+                tactile_ft[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = {
+                    "dtype": "uint8",
+                    "shape": (240, 320, 3),
+                    "names": ["height", "width", "channel"],
+                }
             else:
                 # 未知传感器类型，使用基本的力数据格式
                 tactile_ft[f"observation.tactile.{sensor_type}.{name}.resultant_force"] = {
@@ -603,12 +604,12 @@ class ManipulatorRobot:
                         [data.get("recvTimestamp", 0.0)], dtype=torch.float64
                     )
                 elif sensor_type == "gelsight":
-                    # 🚀 GelSight传感器：优化的数据处理 - 移除昂贵的类型检查
+                    # GelSight传感器：优化的数据处理 - 移除昂贵的类型检查
                     tactile_data[f"{name}_sensor_sn"] = data.get("device_name", "")
                     tactile_data[f"{name}_frame_index"] = torch.tensor(
                         [data.get("frame_index", 0)], dtype=torch.int64
                     )
-                    # 🚀 关键优化：gelsight.py 现在直接返回 float 时间戳，无需转换
+                    # 关键优化：gelsight.py 现在直接返回 float 时间戳，无需转换
                     gelsight_timestamp = data.get("timestamp", time.time())
                     tactile_data[f"{name}_send_timestamp"] = torch.tensor(
                         [gelsight_timestamp], dtype=torch.float64
@@ -616,18 +617,57 @@ class ManipulatorRobot:
                     tactile_data[f"{name}_recv_timestamp"] = torch.tensor(
                         [gelsight_timestamp], dtype=torch.float64
                     )
-                else:
-                    # 未知传感器类型：使用通用字段
-                    tactile_data[f"{name}_sensor_sn"] = data.get("sensor_id", data.get("device_name", ""))
+                elif sensor_type == "digit":
+                    # DIGIT传感器：只处理图像数据，移除力数据
+                    tactile_data[f"{name}_sensor_sn"] = data.get("device_name", "")
                     tactile_data[f"{name}_frame_index"] = torch.tensor(
-                        [data.get("frame_index", data.get("index", 0))], dtype=torch.int64
+                        [data.get("frame_index", 0)], dtype=torch.int64
                     )
-                    # 尝试多种时间戳字段
-                    timestamp = data.get(
-                        "timestamp", data.get("recvTimestamp", data.get("sendTimestamp", time.time()))
-                    )
+                    timestamp = data.get("timestamp", time.time())
                     tactile_data[f"{name}_send_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
                     tactile_data[f"{name}_recv_timestamp"] = torch.tensor([timestamp], dtype=torch.float64)
+                    
+                    # 处理图像数据，确保格式正确
+                    if "tactile_image" in data and data["tactile_image"] is not None:
+                        image = data["tactile_image"]
+                        # 验证图像格式
+                        if isinstance(image, np.ndarray):
+                            # 检查维度和形状
+                            if image.ndim == 3 and image.shape[2] == 3:
+                                # 图像格式正确，转换为torch.Tensor
+                                tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
+                            else:
+                                # 图像维度不正确，尝试修复
+                                print(f"Warning: DIGIT image has wrong shape: {image.shape}, expected (H, W, 3)")
+                                if image.ndim == 1 and len(image) == 240 * 320 * 3:
+                                    # 尝试重塑一维数组
+                                    try:
+                                        image = image.reshape(240, 320, 3)
+                                        tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
+                                    except:
+                                        # 重塑失败，创建空图像
+                                        tactile_data[f"{name}_tactile_image"] = torch.zeros((240, 320, 3), dtype=torch.uint8)
+                                else:
+                                    # 无法修复，创建空图像
+                                    tactile_data[f"{name}_tactile_image"] = torch.zeros((240, 320, 3), dtype=torch.uint8)
+                        else:
+                            # 不是numpy数组，创建空图像
+                            print(f"Warning: DIGIT image is not a numpy array: {type(image)}")
+                            tactile_data[f"{name}_tactile_image"] = torch.zeros((240, 320, 3), dtype=torch.uint8)
+                    elif "image" in data and data["image"] is not None:
+                        # 兼容image字段
+                        image = data["image"]
+                        if isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] == 3:
+                            tactile_data[f"{name}_tactile_image"] = torch.from_numpy(image)
+                        else:
+                            print(f"Warning: DIGIT image (from 'image' field) has wrong format")
+                            tactile_data[f"{name}_tactile_image"] = torch.zeros((240, 320, 3), dtype=torch.uint8)
+                    else:
+                        # 没有图像数据，创建空图像
+                        tactile_data[f"{name}_tactile_image"] = torch.zeros((240, 320, 3), dtype=torch.uint8)
+                else:
+                    tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
+                    tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
 
                 if sensor_type == "tac3d":
                     # Tac3D传感器的三维数据阵列
@@ -725,6 +765,9 @@ class ManipulatorRobot:
                     imgh = getattr(sensor.config, "imgh", 240)
                     imgw = getattr(sensor.config, "imgw", 320)
                     tactile_data[f"{name}_tactile_image"] = torch.zeros((imgh, imgw, 3), dtype=torch.uint8)
+                elif sensor_type == "digit":
+                    # DIGIT传感器默认图像大小
+                    tactile_data[f"{name}_tactile_image"] = torch.zeros((240, 320, 3), dtype=torch.uint8)
                 else:
                     tactile_data[f"{name}_resultant_force"] = torch.zeros(3, dtype=torch.float64)
                     tactile_data[f"{name}_resultant_moment"] = torch.zeros(3, dtype=torch.float64)
@@ -771,6 +814,12 @@ class ManipulatorRobot:
                 obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[
                     f"{name}_tactile_image"
                 ]
+            elif sensor_type == "digit":
+                # DIGIT传感器：只有图像数据
+                if f"{name}_tactile_image" in tactile_data:
+                    obs_dict[f"observation.tactile.{sensor_type}.{name}.tactile_image"] = tactile_data[
+                        f"{name}_tactile_image"
+                    ]
             else:
                 # 未知传感器类型，添加基本的力数据
                 if f"{name}_resultant_force" in tactile_data:

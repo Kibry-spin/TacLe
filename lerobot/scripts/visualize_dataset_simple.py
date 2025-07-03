@@ -37,9 +37,8 @@ python lerobot/scripts/visualize_dataset_simple.py \
 - Visualize with tactile sensors:
 ```
 python lerobot/scripts/visualize_dataset_simple.py \
-    --repo-id your_dataset_with_tactile \
+    --repo-id $USER/test_three_sensors \
     --episode-index 0
-    python lerobot/scripts/visualize_dataset_simple.py  --repo-id F:\Two_Sensor_dataset\Real_test3  --episode-index 0
 ```
 """
 
@@ -53,6 +52,7 @@ import numpy as np
 import rerun as rr
 import torch
 import tqdm
+import cv2
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
@@ -129,7 +129,7 @@ def visualize_tac3d_points_and_vectors(
         
     # Ensure correct data format
     if positions.ndim != 2 or positions.shape[1] != 3:
-        print(f"Warning: Invalid positions shape: {positions.shape}, expected (N, 3)")
+        logging.warning(f"Invalid positions shape: {positions.shape}, expected (N, 3)")
         return
     
     # Check if data is all zeros (sensor not properly initialized)
@@ -139,7 +139,7 @@ def visualize_tac3d_points_and_vectors(
     
     if positions_zero and forces_zero and displacements_zero:
         # If all data is zero, use demo data and show warning
-        print(f"⚠️  Warning: Tac3D sensor {sensor_name} data is all zeros. Using demo data for visualization.")
+        logging.warning(f"Tac3D sensor {sensor_name} data is all zeros. Using demo data for visualization.")
         
         demo_positions, demo_displacements, demo_forces = generate_tac3d_demo_data()
         
@@ -344,7 +344,7 @@ def visualize_tac3d_points_and_vectors(
                              f"Total sensing points: {len(positions)}"))
                              
     except Exception as e:
-        print(f"Warning: Error visualizing Tac3D data for {sensor_name}: {e}")
+        logging.error(f"Error visualizing Tac3D data for {sensor_name}: {e}")
 
 
 def get_episode_frame_indices(dataset: LeRobotDataset, episode_index: int):
@@ -393,8 +393,8 @@ def visualize_dataset_simple(
     gc.collect()
 
     if mode == "distant":
-        print(f"Starting server on web_port={web_port}, ws_port={ws_port}")
-        print(f"Please use: rerun ws://localhost:{ws_port} from your local machine")
+        logging.info(f"Starting server on web_port={web_port}, ws_port={ws_port}")
+        logging.info(f"Please use: rerun ws://localhost:{ws_port} from your local machine")
 
     logging.info("Getting episode frame indices")
     frame_indices = get_episode_frame_indices(dataset, episode_index)
@@ -436,6 +436,7 @@ def visualize_dataset_simple(
         # Enhanced tactile sensor data visualization
         tac3d_sensors = {}  # {sensor_name: {data_type: data}}
         gelsight_sensors = {}  # {sensor_name: {data_type: data}}
+        digit_sensors = {}  # {sensor_name: {data_type: data}}
         
         for key in frame_data.keys():
             if key.startswith("observation.tactile."):
@@ -446,7 +447,7 @@ def visualize_dataset_simple(
                 
                 if len(parts) >= 5:
                     # New hierarchical structure: observation.tactile.{sensor_type}.{name}.{field}
-                    sensor_type = parts[2]  # "gelsight" or "tac3d"
+                    sensor_type = parts[2]  # "gelsight" or "tac3d" or "digit"
                     sensor_name = parts[3]  # "main_gripper0", "main_gripper1", etc.
                     data_type = parts[4]    # "tactile_image", "resultant_force", etc.
                 elif len(parts) >= 4:
@@ -456,7 +457,11 @@ def visualize_dataset_simple(
                     
                     # Infer sensor type from data type
                     if data_type in ["tactile_image"]:
-                        sensor_type = "gelsight"
+                        # Check if sensor name contains "digit" to differentiate from GelSight
+                        if "digit" in sensor_name.lower():
+                            sensor_type = "digit"
+                        else:
+                            sensor_type = "gelsight"
                     elif data_type in ["resultant_force", "resultant_moment", "positions_3d", "forces_3d", "displacements_3d", "sensor_sn", "frame_index", "send_timestamp", "recv_timestamp"]:
                         sensor_type = "tac3d"
                     else:
@@ -475,74 +480,69 @@ def visualize_dataset_simple(
                     if sensor_name not in tac3d_sensors:
                         tac3d_sensors[sensor_name] = {}
                     
-                    # Field name mapping (数据集键名 -> Tac3D原始键名)
-                    field_mapping = {
-                        'positions_3d': '3D_Positions',
-                        'displacements_3d': '3D_Displacements',
-                        'forces_3d': '3D_Forces',
-                        'resultant_force': 'resultant_force',  # 使用tac3d.py中添加的标准化字段名
-                        'resultant_moment': 'resultant_moment',  # 使用tac3d.py中添加的标准化字段名
-                        'sensor_sn': 'SN',
-                        'frame_index': 'index',
-                        'send_timestamp': 'sendTimestamp',
-                        'recv_timestamp': 'recvTimestamp'
-                    }
+                    # Store data using standardized field names
+                    tac3d_sensors[sensor_name][data_type] = current_data
                     
-                    # Convert field names
-                    data_type_mapped = field_mapping.get(data_type, data_type)
-                    tac3d_sensors[sensor_name][data_type_mapped] = current_data
-                    
-                    # Process force and moment data
-                    if data_type == 'resultant_force' or data_type_mapped == 'resultant_force' or data_type_mapped == '3D_ResultantForce':
+                    # Process force data
+                    if data_type == 'resultant_force':
                         force = current_data
-                        if force is None:
-                            print(f"警告: 传感器 {sensor_name} 的合力数据为空")
-                            continue
-                            
-                        # 打印调试信息
-                        print(f"合力数据 ({sensor_name}): 类型={type(force)}, 形状={force.shape if hasattr(force, 'shape') else '无形状'}, 值={force}")
-                        
-                        # 处理不同形状的数据
-                        if isinstance(force, np.ndarray):
+                        if force is not None and isinstance(force, np.ndarray):
                             if force.ndim == 2 and force.shape[0] == 1:
-                                force = force[0]  # 从(1,3)转为(3,)
+                                force = force[0]  # Convert (1,3) to (3,)
                             
                             if force.size >= 3:
-                                # 记录xyz力分量
+                                # Extract force components (following main-example.py style)
+                                fx, fy, fz = float(force[0]), float(force[1]), float(force[2])
+                                
+                                # Log force components (existing 3D visualization)
                                 for dim_idx, force_component in enumerate(force[:3]):
                                     axis_name = ['x', 'y', 'z'][dim_idx]
                                     rr.log(f"Tactile/Tac3D/{sensor_name}/Forces/Component/{axis_name}", 
                                           rr.Scalars(force_component))
                                 
-                                # 记录合力大小
+                                # Log force magnitude (existing 3D visualization)
                                 force_magnitude = np.linalg.norm(force[:3])
                                 rr.log(f"Tactile/Tac3D/{sensor_name}/Forces/Magnitude", 
                                       rr.Scalars(force_magnitude))
                                 
-                                # 打印调试信息
-                                print(f"合力分量 ({sensor_name}): X={force[0]:.4f}, Y={force[1]:.4f}, Z={force[2]:.4f}, 大小={force_magnitude:.4f}")
+                                # === NEW: Force & Moment Components Analysis Window ===
+                                # Log force components in unified window for clear analysis
+                                rr.log(f"Force_and_Moment_Components/{sensor_name}/Force/Fx", 
+                                      rr.Scalars(fx))
+                                rr.log(f"Force_and_Moment_Components/{sensor_name}/Force/Fy", 
+                                      rr.Scalars(fy))
+                                rr.log(f"Force_and_Moment_Components/{sensor_name}/Force/Fz", 
+                                      rr.Scalars(fz))
                             
-                    elif data_type == 'resultant_moment' or data_type_mapped == 'resultant_moment' or data_type_mapped == '3D_ResultantMoment':
+                    elif data_type == 'resultant_moment':
                         moment = current_data
-                        if moment is None:
-                            continue
-                            
-                        # 处理不同形状的数据
-                        if isinstance(moment, np.ndarray):
+                        if moment is not None and isinstance(moment, np.ndarray):
                             if moment.ndim == 2 and moment.shape[0] == 1:
-                                moment = moment[0]  # 从(1,3)转为(3,)
+                                moment = moment[0]  # Convert (1,3) to (3,)
                             
                             if moment.size >= 3:
-                                # 记录xyz力矩分量
+                                # Extract moment components (following main-example.py style)
+                                mx, my, mz = float(moment[0]), float(moment[1]), float(moment[2])
+                                
+                                # Log moment components (existing 3D visualization)
                                 for dim_idx, moment_component in enumerate(moment[:3]):
                                     axis_name = ['x', 'y', 'z'][dim_idx]
                                     rr.log(f"Tactile/Tac3D/{sensor_name}/Moments/Component/{axis_name}", 
                                           rr.Scalars(moment_component))
                                 
-                                # 记录力矩大小
+                                # Log moment magnitude (existing 3D visualization)
                                 moment_magnitude = np.linalg.norm(moment[:3])
                                 rr.log(f"Tactile/Tac3D/{sensor_name}/Moments/Magnitude", 
                                       rr.Scalars(moment_magnitude))
+                                
+                                # === Moment components in unified window ===
+                                # Log moment components in same unified window
+                                rr.log(f"Force_and_Moment_Components/{sensor_name}/Moment/Mx", 
+                                      rr.Scalars(mx))
+                                rr.log(f"Force_and_Moment_Components/{sensor_name}/Moment/My", 
+                                      rr.Scalars(my))
+                                rr.log(f"Force_and_Moment_Components/{sensor_name}/Moment/Mz", 
+                                      rr.Scalars(mz))
 
                 elif sensor_type == "gelsight":
                     # GelSight sensor data processing
@@ -582,6 +582,44 @@ def visualize_dataset_simple(
                         rr.log(f"Tactile/GelSight/{sensor_name}/Metadata/{data_type}", 
                               rr.Scalars(metadata_value))
                 
+                elif sensor_type == "digit":
+                    # DIGIT传感器：只有图像数据
+                    if sensor_name not in digit_sensors:
+                        digit_sensors[sensor_name] = {}
+                    
+                    digit_sensors[sensor_name][data_type] = current_data
+                    
+                    if data_type == "tactile_image":
+                        tactile_image = current_data
+                        
+                        # Ensure correct image format
+                        if isinstance(tactile_image, np.ndarray):
+                            if tactile_image.ndim == 3 and tactile_image.shape[-1] == 3:
+                                # DIGIT图像已经在sensor中转换为RGB，无需再次转换
+                                # 直接使用图像数据
+                                
+                                # Log tactile image
+                                rr.log(f"Tactile/DIGIT/{sensor_name}/Image", 
+                                      rr.Image(tactile_image))
+                                
+                                # Calculate and log basic image statistics
+                                mean_brightness = np.mean(tactile_image)
+                                contrast = np.std(tactile_image)
+                                
+                                rr.log(f"Tactile/DIGIT/{sensor_name}/Stats/Brightness", 
+                                      rr.Scalars(mean_brightness))
+                                rr.log(f"Tactile/DIGIT/{sensor_name}/Stats/Contrast", 
+                                      rr.Scalars(contrast))
+                    
+                    elif data_type in ["frame_index", "recv_timestamp", "send_timestamp"]:
+                        # Log metadata
+                        metadata_value = current_data
+                        if isinstance(metadata_value, (np.ndarray, torch.Tensor)):
+                            metadata_value = float(metadata_value.item())
+                        
+                        rr.log(f"Tactile/DIGIT/{sensor_name}/Metadata/{data_type}", 
+                              rr.Scalars(metadata_value))
+                
                 # Log sensor metadata
                 if data_type == "sensor_sn":
                     sensor_sn = str(current_data)
@@ -591,21 +629,18 @@ def visualize_dataset_simple(
                     elif sensor_type == "gelsight":
                         rr.log(f"Tactile/GelSight/{sensor_name}/Info", 
                               rr.TextLog(f"Serial Number: {sensor_sn}"))
+                    elif sensor_type == "digit":
+                        rr.log(f"Tactile/DIGIT/{sensor_name}/Info", 
+                              rr.TextLog(f"Serial Number: {sensor_sn}"))
         
-        # Comprehensive 3D visualization for each Tac3D sensor
+        # 3D visualization for each Tac3D sensor
         for sensor_name, sensor_data in tac3d_sensors.items():
-            # 获取3D数据，支持多种可能的键名
-            positions = sensor_data.get('3D_Positions')
-            displacements = sensor_data.get('3D_Displacements')
-            forces = sensor_data.get('3D_Forces')
+            # Get 3D data using standardized field names
+            positions = sensor_data.get('positions_3d')
+            displacements = sensor_data.get('displacements_3d')
+            forces = sensor_data.get('forces_3d')
             
-            # 打印调试信息
-            print(f"\n传感器 {sensor_name} 数据键值:")
-            for key, value in sensor_data.items():
-                shape_info = f"形状={value.shape}" if hasattr(value, 'shape') else "无形状"
-                print(f"  - {key}: {type(value)}, {shape_info}")
-            
-            # Call enhanced Tac3D visualization function
+            # Call 3D visualization function
             visualize_tac3d_points_and_vectors(
                 sensor_name=f"Tactile/Tac3D/{sensor_name}",
                 positions=positions,
@@ -724,22 +759,13 @@ def main():
     # Check if the requested episode exists
     available_episodes = dataset_meta.num_episodes
     total_frames = dataset_meta.num_frames
-    print(f"📊 数据集信息:")
-    print(f"   - 总episode数量: {available_episodes} 个 (编号从 0 到 {available_episodes-1})")
-    print(f"   - 总frame数量: {total_frames} 个")
-    print(f"   - 平均每个episode: {total_frames//available_episodes} 个frames")
+    logging.info(f"Dataset info: {available_episodes} episodes, {total_frames} total frames")
     
     if episode_index >= available_episodes:
-        print(f"\n❌ 错误：请求的 episode {episode_index} 不存在！")
-        print(f"   可用的episode编号范围: 0 到 {available_episodes-1}")
-        print(f"   请使用 --episode-index 参数指定正确的episode编号")
-        print(f"\n💡 示例命令:")
-        print(f"   python lerobot/scripts/visualize_dataset_simple.py \\")
-        print(f"       --repo-id {repo_id} \\")
-        print(f"       --episode-index 0")
+        logging.error(f"Episode {episode_index} does not exist. Available episodes: 0 to {available_episodes-1}")
         return
     
-    print(f"✅ 正在可视化 episode {episode_index}")
+    logging.info(f"Visualizing episode {episode_index}")
     
     # Now load the dataset with the specific episode
     dataset = LeRobotDataset(

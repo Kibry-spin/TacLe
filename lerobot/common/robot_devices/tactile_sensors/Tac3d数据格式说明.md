@@ -191,6 +191,8 @@ field_mapping = {
 2. `manipulator.py`: Check for both field name variants
 3. `visualize_dataset_simple.py`: Use correct field mapping
 
+
+
 ## Usage Examples
 
 ### Reading Sensor Data
@@ -206,7 +208,23 @@ sensor.connect()
 # Read data
 data = sensor.read()
 print(f"Sensor SN: {data['SN']}")
-print(f"Resultant force: {data['resultant_force']}")
+print(f"Resultant force 3D: {data['resultant_force']}")
+
+# Access force components (similar to main-example.py)
+force_3d = data['resultant_force']
+moment_3d = data['resultant_moment']
+
+if force_3d is not None and force_3d.size >= 3:
+    fx, fy, fz = float(force_3d[0, 0]), float(force_3d[0, 1]), float(force_3d[0, 2])
+    force_magnitude = np.sqrt(fx*fx + fy*fy + fz*fz)
+    print(f"Force components: Fx={fx:.3f} Fy={fy:.3f} Fz={fz:.3f} N")
+    print(f"Force magnitude: {force_magnitude:.3f} N")
+
+if moment_3d is not None and moment_3d.size >= 3:
+    mx, my, mz = float(moment_3d[0, 0]), float(moment_3d[0, 1]), float(moment_3d[0, 2])
+    moment_magnitude = np.sqrt(mx*mx + my*my + mz*mz)
+    print(f"Moment components: Mx={mx:.3f} My={my:.3f} Mz={mz:.3f} N·m")
+    print(f"Moment magnitude: {moment_magnitude:.3f} N·m")
 ```
 
 ### Accessing Dataset Tactile Data

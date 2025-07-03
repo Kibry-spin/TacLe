@@ -69,4 +69,29 @@ class GelSightConfig(TactileSensorConfig):
     raw_imgh: int = 2464
     raw_imgw: int = 3280
     framerate: int = 25
+    config_path: str = ""
+
+
+@TactileSensorConfig.register_subclass("digit")
+@dataclass
+class DIGITConfig(TactileSensorConfig):
+    """
+    Configuration for DIGIT tactile sensor.
+    
+    Args:
+        device_name: Name of the camera device (default: "DIGIT")
+        imgh: Desired image height (default: 240)
+        imgw: Desired image width (default: 320)
+        raw_imgh: Raw image height (default: 480)
+        raw_imgw: Raw image width (default: 640)
+        framerate: Camera framerate (default: 60)
+        config_path: Path to sensor config file (optional)
+        mock: Whether to use mock sensor for testing (default: False)
+    """
+    device_name: str = "DIGIT"
+    imgh: int = 240
+    imgw: int = 320
+    raw_imgh: int = 480
+    raw_imgw: int = 640
+    framerate: int = 60
     config_path: str = "" 

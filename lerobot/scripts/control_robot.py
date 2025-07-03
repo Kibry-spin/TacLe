@@ -43,7 +43,7 @@ python lerobot/scripts/control_robot.py \
 - Unlimited teleoperation at a limited frequency of 30 Hz, to simulate data recording frequency:
 ```bash
 python lerobot/scripts/control_robot.py \
-    --robot.type=so100 \
+    --robot.type=so101 \
     --control.type=teleoperate \
     --control.fps=30
 ```
@@ -84,14 +84,15 @@ python lerobot/scripts/control_robot.py \
     --robot.type=so101 \
     --control.type=record \
     --control.fps 30 \
-    --control.repo_id=$USER/Real_test2 \
-    --control.num_episodes=100 \
+    --control.repo_id=$USER/test_three_sensors \
+    --control.num_episodes=3 \
     --control.warmup_time_s=2 \
     --control.episode_time_s=30 \
     --control.reset_time_s=10 \
     --control.single_task="Just move the robot" \
     --control.play_sounds=false \
-    --control.push_to_hub=false
+    --control.push_to_hub=false \
+    --control.force_delete_existing=true
 ```
 
 - For remote controlled robots like LeKiwi, run this script on the robot edge device (e.g. RaspBerryPi):
